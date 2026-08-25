@@ -108,6 +108,10 @@ class LevelEvent:
     price: float
     distance_atr: float
     recipients: tuple[int, ...]
+    # Оба расстояния переносятся вместе с событием: получатели одного и того
+    # же подхода могут мерить в разных единицах, и пересчитать процент позже,
+    # имея только ATR, уже нельзя.
+    distance_pct: float = 0.0
 
 
 @dataclass(slots=True)
@@ -210,6 +214,7 @@ def evaluate_level(
             kind=AlertKind.APPROACH.value,
             price=price,
             distance_atr=distance_atr,
+            distance_pct=distance_pct,
             recipients=tuple(recipients),
         ),
     )
@@ -241,6 +246,9 @@ def detect_breakout(
         return None
 
     distance_atr = abs(closed_close - level.price) / atr
+    distance_pct = (
+        abs(closed_close - level.price) / level.price * 100 if level.price > 0 else 0.0
+    )
     recipients = [
         s.tg_id
         for s in subscribers
@@ -259,5 +267,6 @@ def detect_breakout(
         kind=AlertKind.BREAKOUT.value,
         price=closed_close,
         distance_atr=distance_atr,
+        distance_pct=distance_pct,
         recipients=tuple(recipients),
     )

@@ -20,6 +20,7 @@ from alert_bot.db.models import (
     Instrument,
     Level as LevelRow,
     Subscription,
+    ThresholdUnit,
     User,
     UserLevel,
     utcnow,
@@ -27,6 +28,7 @@ from alert_bot.db.models import (
 from alert_bot.db.session import session_scope
 from alert_bot.market.detector import LevelEvent, Subscriber
 from alert_bot.market.levels import HUMAN_KIND
+from alert_bot.threshold import format_distance, unit_of
 
 log = logging.getLogger(__name__)
 
@@ -137,8 +139,19 @@ async def filter_recipients(recipients: tuple[int, ...], now: datetime) -> list[
     Потолок нужен именно потому, что инструменты добавляет админ: подписка на
     восемь штук без него превращает бота в шум, и его замьютят целиком.
     """
+    return [tg_id for tg_id, _ in await allowed_recipients(recipients, now)]
+
+
+async def allowed_recipients(
+    recipients: tuple[int, ...], now: datetime
+) -> list[tuple[int, str]]:
+    """То же самое, но вместе с единицей измерения каждого получателя.
+
+    Событие одно, а текст у него — свой на каждую единицу: подход к уровню
+    может ждать и тот, кто мерит в ATR, и тот, кто в процентах.
+    """
     settings = get_settings()
-    allowed: list[int] = []
+    allowed: list[tuple[int, str]] = []
 
     async with session_scope() as session:
         users = {
@@ -159,7 +172,7 @@ async def filter_recipients(recipients: tuple[int, ...], now: datetime) -> list[
         if await alerts_sent_last_day(tg_id, now) >= limit:
             log.info("tg_id=%s достиг дневного потолка алертов", tg_id)
             continue
-        allowed.append(tg_id)
+        allowed.append((tg_id, unit_of(user)))
 
     return allowed
 
@@ -169,8 +182,14 @@ def format_alert(
     event: LevelEvent,
     brief: str | None = None,
     user_level: UserLevel | None = None,
+    unit: str = ThresholdUnit.ATR.value,
 ) -> str:
-    """Текст алерта. Все числа — из посчитанных данных, не из модели."""
+    """Текст алерта. Все числа — из посчитанных данных, не из модели.
+
+    Расстояние показывается в единице получателя: порог он задавал в ней же, и
+    видеть рядом с уровнем другую единицу — значит не мочь сверить алерт со
+    своей настройкой.
+    """
     precision = instrument.price_precision
     price = f"{event.price:,.{precision}f}".replace(",", " ")
     level_price = f"{event.level_price:,.{precision}f}".replace(",", " ")
@@ -192,7 +211,8 @@ def format_alert(
         headline,
         "",
         f"Цена: <code>{price}</code>",
-        f"Уровень: <code>{level_price}</code> · {event.distance_atr:.2f}×ATR",
+        f"Уровень: <code>{level_price}</code> · "
+        f"{format_distance(unit, event.distance_atr, event.distance_pct)}",
     ]
 
     if is_manual:
@@ -224,11 +244,17 @@ async def dispatch_event(
 ) -> int:
     """Фильтрует получателей, пишет alert в БД и ставит сообщения в очередь."""
     now = now or utcnow()
-    recipients = await filter_recipients(event.recipients, now)
-    if not recipients:
+    allowed = await allowed_recipients(event.recipients, now)
+    if not allowed:
         return 0
 
-    text = format_alert(instrument, event, brief, user_level)
+    recipients = [tg_id for tg_id, _ in allowed]
+    # Текст рендерится по одному разу на единицу, а не на получателя: единиц
+    # всего две, а подписчиков может быть много.
+    text_by_unit = {
+        unit: format_alert(instrument, event, brief, user_level, unit)
+        for unit in {unit for _, unit in allowed}
+    }
 
     async with session_scope() as session:
         session.add(
@@ -247,8 +273,8 @@ async def dispatch_event(
             )
         )
 
-    for tg_id in recipients:
-        notifier.enqueue(Outgoing(chat_id=tg_id, text=text))
+    for tg_id, unit in allowed:
+        notifier.enqueue(Outgoing(chat_id=tg_id, text=text_by_unit[unit]))
 
     log.info(
         "%s: %s у %.6g -> %s получателей",

@@ -84,16 +84,16 @@ def test_defaults_shown_when_user_set_nothing() -> None:
 
 
 def test_slider_moves_between_steps_and_clamps() -> None:
-    assert views._shift(0.3, views.ATR_STEPS, +1) == 0.5
-    assert views._shift(0.3, views.ATR_STEPS, -1) == 0.2
+    assert views.shift(0.3, views.ATR_STEPS, +1) == 0.5
+    assert views.shift(0.3, views.ATR_STEPS, -1) == 0.2
     # На краях шкала не уезжает за пределы.
-    assert views._shift(views.ATR_STEPS[0], views.ATR_STEPS, -1) == views.ATR_STEPS[0]
-    assert views._shift(views.ATR_STEPS[-1], views.ATR_STEPS, +1) == views.ATR_STEPS[-1]
+    assert views.shift(views.ATR_STEPS[0], views.ATR_STEPS, -1) == views.ATR_STEPS[0]
+    assert views.shift(views.ATR_STEPS[-1], views.ATR_STEPS, +1) == views.ATR_STEPS[-1]
 
 
 def test_value_off_the_grid_snaps_to_nearest() -> None:
     """Значение из конфига может не совпасть с сеткой ползунка."""
-    assert views._shift(0.33, views.ATR_STEPS, +1) == 0.5
+    assert views.shift(0.33, views.ATR_STEPS, +1) == 0.5
 
 
 def test_scale_marks_current_position() -> None:

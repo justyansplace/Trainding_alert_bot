@@ -24,6 +24,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from alert_bot.config import get_settings
 from alert_bot.db.models import Direction, ThresholdUnit, User
 from alert_bot.db.session import session_scope
+from alert_bot.threshold import unit_of
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def _nearest(value: float, steps: list) -> int:  # noqa: ANN001
     return min(range(len(steps)), key=lambda i: abs(steps[i] - value))
 
 
-def _shift(value: float, steps: list, direction: int):  # noqa: ANN001, ANN202
+def shift(value: float, steps: list, direction: int):  # noqa: ANN001, ANN202
     index = min(max(_nearest(value, steps) + direction, 0), len(steps) - 1)
     return steps[index]
 
@@ -63,7 +64,7 @@ def resolve(user: User) -> dict:
     """Действующие настройки: своё значение или дефолт из конфига."""
     settings = get_settings()
     return {
-        "unit": user.def_threshold_unit or settings.default_threshold_unit,
+        "unit": unit_of(user),
         "atr_k": user.def_atr_k if user.def_atr_k is not None else settings.default_atr_k,
         "pct": (
             user.def_threshold_pct
@@ -165,9 +166,9 @@ async def _mutate(tg_id: int, action: str, arg: str) -> User:
         elif action == "thr":
             step = 1 if arg == "+" else -1
             if current["unit"] == ThresholdUnit.ATR.value:
-                user.def_atr_k = _shift(current["atr_k"], ATR_STEPS, step)
+                user.def_atr_k = shift(current["atr_k"], ATR_STEPS, step)
             else:
-                user.def_threshold_pct = _shift(current["pct"], PCT_STEPS, step)
+                user.def_threshold_pct = shift(current["pct"], PCT_STEPS, step)
 
         elif action == "dir":
             order = [Direction.ANY.value, Direction.UP.value, Direction.DOWN.value]
@@ -175,11 +176,11 @@ async def _mutate(tg_id: int, action: str, arg: str) -> User:
 
         elif action == "cd":
             step = 1 if arg == "+" else -1
-            user.def_cooldown_hours = int(_shift(current["cooldown"], COOLDOWN_STEPS, step))
+            user.def_cooldown_hours = int(shift(current["cooldown"], COOLDOWN_STEPS, step))
 
         elif action == "cap":
             step = 1 if arg == "+" else -1
-            user.max_alerts_per_day = int(_shift(current["cap"], CAP_STEPS, step))
+            user.max_alerts_per_day = int(shift(current["cap"], CAP_STEPS, step))
 
         elif action == "reset":
             user.def_threshold_unit = None

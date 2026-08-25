@@ -22,6 +22,7 @@ from alert_bot.bot.access import fmt_dt
 from alert_bot.bot.menu import back_kb
 from alert_bot.db.models import User
 from alert_bot.market import registry, user_levels
+from alert_bot.threshold import gap_text, unit_of
 
 log = logging.getLogger(__name__)
 
@@ -77,12 +78,15 @@ async def _subscribed_instruments(user: User) -> list:
     return [i for i in instruments if subs.get(i.id) and subs[i.id].enabled]
 
 
-def _distance(level, instrument) -> str:  # noqa: ANN001
-    if not (instrument.last_price and instrument.atr):
+def _distance(level, instrument, unit: str) -> str:  # noqa: ANN001
+    """Расстояние до уровня в той единице, что выбрал пользователь."""
+    if not instrument.last_price:
         return ""
-    gap = abs(level.price - instrument.last_price) / instrument.atr
+    gap = gap_text(unit, level.price, instrument.last_price, instrument.atr)
+    if not gap:
+        return ""
     side = "▲" if level.price > instrument.last_price else "▼"
-    return f"{side} {gap:.2f}×ATR"
+    return f"{side} {gap}"
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +97,7 @@ def _distance(level, instrument) -> str:  # noqa: ANN001
 async def render_levels(user: User) -> tuple[str, InlineKeyboardMarkup]:
     instruments = {i.id: i for i in await registry.list_instruments()}
     rows = await user_levels.list_levels(user.tg_id)
+    unit = unit_of(user)
 
     if not rows:
         return (
@@ -126,7 +131,7 @@ async def render_levels(user: User) -> tuple[str, InlineKeyboardMarkup]:
 
         for level in levels:
             price_txt = _fmt(level.price, instrument.price_precision)
-            distance = _distance(level, instrument)
+            distance = _distance(level, instrument, unit)
             caption = " · ".join(filter(None, [price_txt, distance]))
             if level.trigger_count:
                 caption += f" · {level.trigger_count}×"
@@ -188,7 +193,7 @@ async def render_level_card(user: User, level_id: int) -> tuple[str, InlineKeybo
     ]
     if instrument and instrument.last_price:
         lines.append(f"Сейчас: <code>{_fmt(instrument.last_price, precision)}</code>")
-        distance = _distance(level, instrument)
+        distance = _distance(level, instrument, unit_of(user))
         if distance:
             lines.append(f"Расстояние: {distance}")
 
@@ -509,10 +514,11 @@ async def _create_level(message: Message, user: User, instrument, price: float, 
         return
 
     distance = ""
-    if instrument.last_price and instrument.atr:
-        gap = abs(price - instrument.last_price)
-        side = "выше" if price > instrument.last_price else "ниже"
-        distance = f"\nОт текущей цены: {side} на {gap / instrument.atr:.2f}×ATR"
+    if instrument.last_price:
+        gap = gap_text(unit_of(user), level.price, instrument.last_price, instrument.atr)
+        if gap:
+            side = "выше" if price > instrument.last_price else "ниже"
+            distance = f"\nОт текущей цены: {side} на {gap}"
 
     subs = await registry.list_subscriptions(user.tg_id)
     warning = ""

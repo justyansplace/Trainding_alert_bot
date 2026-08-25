@@ -15,8 +15,8 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 
-from alert_bot.config import get_settings
-from alert_bot.db.models import Subscription, User, utcnow  # noqa: F401
+from alert_bot.bot.alert_settings import ATR_STEPS, PCT_STEPS, resolve, shift
+from alert_bot.db.models import Subscription, ThresholdUnit, User, utcnow  # noqa: F401
 from alert_bot.db.session import session_scope
 from alert_bot.market import registry
 
@@ -101,19 +101,32 @@ def _settings_kb() -> InlineKeyboardMarkup:
 
 
 def _settings_text(user: User) -> str:
-    settings = get_settings()
-    atr_k = user.def_atr_k if user.def_atr_k is not None else settings.default_atr_k
+    """Порог показывается в единице пользователя — той же, в которой он его задал."""
+    current = resolve(user)
     quiet = (
         f"{user.quiet_from:02d}:00–{user.quiet_to:02d}:00 ({user.tz})"
         if user.quiet_from is not None and user.quiet_to is not None
         else "не заданы"
     )
 
+    if current["unit"] == ThresholdUnit.ATR.value:
+        threshold = f"<code>{current['atr_k']:.2f}×ATR</code> до уровня"
+        explain = (
+            "ATR — средний часовой ход цены. Чем меньше значение, тем ближе к "
+            "уровню должна подойти цена, прежде чем придёт алерт."
+        )
+    else:
+        threshold = f"<code>{current['pct']:.2f}%</code> от цены уровня"
+        explain = (
+            "Процент считается от цены уровня. Чем меньше значение, тем ближе к "
+            "уровню должна подойти цена, прежде чем придёт алерт."
+        )
+
     return (
         "<b>⚙️ Настройки</b>\n\n"
-        f"Предупреждать за: <code>{atr_k:.2f}×ATR</code> до уровня\n"
-        "<i>ATR — средний часовой ход цены. Чем меньше значение, тем ближе к "
-        "уровню должна подойти цена, прежде чем придёт алерт.</i>\n\n"
+        f"Предупреждать за: {threshold}\n"
+        f"<i>{explain}</i>\n\n"
+        "<i>Единица порога меняется в «Настройке алертов».</i>\n\n"
         f"Тихие часы: {quiet}\n"
         "<code>/quiet 23 7 Europe/Moscow</code> — задать\n"
         "<code>/quiet off</code> — снять"
@@ -195,17 +208,24 @@ async def cb_mute_off(callback: CallbackQuery, user: User) -> None:
 
 @router.callback_query(F.data.startswith("set:"))
 async def cb_settings(callback: CallbackQuery, user: User) -> None:
+    """Двигает порог той единицы, в которой пользователь его задал.
+
+    Раньше кнопка меняла только atr_k — у выбравшего проценты она молча
+    правила величину, которая ни на что не влияет, и экран не менялся.
+    """
     assert callback.data is not None
-    _, field, direction = callback.data.split(":")
-    settings = get_settings()
+    _, _field, direction = callback.data.split(":")
     step = 1 if direction == "+" else -1
 
     async with session_scope() as session:
         stored = await session.get(User, user.tg_id)
         assert stored is not None
 
-        current = stored.def_atr_k if stored.def_atr_k is not None else settings.default_atr_k
-        stored.def_atr_k = round(min(max(current + 0.05 * step, 0.05), 2.0), 2)
+        current = resolve(stored)
+        if current["unit"] == ThresholdUnit.ATR.value:
+            stored.def_atr_k = shift(current["atr_k"], ATR_STEPS, step)
+        else:
+            stored.def_threshold_pct = shift(current["pct"], PCT_STEPS, step)
         refreshed = stored
 
     assert callback.message is not None
