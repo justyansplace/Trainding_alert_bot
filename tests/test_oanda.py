@@ -334,3 +334,55 @@ async def test_health_endpoint_reflects_heartbeat(db, monkeypatch, tmp_path) -> 
     heartbeat.write_text(str(time.time() - 99999))
     healthy, detail = health.check()
     assert healthy is False and "протух" in detail
+
+
+@pytest.mark.parametrize(
+    ("terminal_name", "canonical"),
+    [
+        ("USTEC", "NAS100"),
+        ("US500", "SPX500"),
+        ("UKOIL", "BRENT"),
+        ("USOIL", "WTI"),
+        ("DAX", "DE40"),
+        ("usdcnh", "USD/CNH"),
+    ],
+)
+def test_terminal_names_are_understood(terminal_name: str, canonical: str) -> None:
+    """Люди переносят названия прямо из своего терминала.
+
+    Одно и то же там зовётся по-разному: US500 против SPX500, USTEC против
+    NAS100. Заставлять человека знать наше внутреннее имя незачем.
+    """
+    assert yahoo.normalize_symbol(terminal_name) == canonical
+    assert canonical in yahoo.SYMBOL_MAP
+
+
+def test_bulk_parser_guesses_venue() -> None:
+    """Площадка угадывается, чтобы не писать её у каждого из четырнадцати."""
+    from alert_bot.bot.admin_instruments import _parse_bulk
+
+    assert _parse_bulk(["EURUSD", "BTC/USDT", "SOL/USDT@bybit", "US500"]) == [
+        ("EURUSD", "yahoo"),
+        ("BTC/USDT", "binance"),
+        ("SOL/USDT", "bybit"),
+        ("US500", "yahoo"),
+    ]
+
+
+def test_bulk_parser_tolerates_commas_and_blanks() -> None:
+    from alert_bot.bot.admin_instruments import _parse_bulk
+
+    assert _parse_bulk(["EURUSD,", "", "  ", "XAUUSD"]) == [
+        ("EURUSD", "yahoo"),
+        ("XAUUSD", "yahoo"),
+    ]
+
+
+def test_presets_reference_known_symbols() -> None:
+    """Набор с опечаткой обнаружился бы только при попытке добавления."""
+    from alert_bot.bot.admin_instruments import PRESETS
+
+    for _title, items in PRESETS.values():
+        for symbol, exchange in items:
+            if exchange == "yahoo":
+                assert yahoo.normalize_symbol(symbol) in yahoo.SYMBOL_MAP, symbol

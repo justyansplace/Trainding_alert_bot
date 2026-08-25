@@ -73,11 +73,32 @@ SYMBOL_MAP: dict[str, str] = {
     "WTI": "CL=F",
     "COPPER": "HG=F",
     "NATGAS": "NG=F",
+    "USD/CNH": "USDCNH=X",
     # Индексы
     "SPX500": "^GSPC",
     "NAS100": "^NDX",
     "US30": "^DJI",
     "DE40": "^GDAXI",
+}
+
+# Синонимы: у каждой платформы свои названия одного и того же инструмента.
+# Слева то, как оно подписано в терминале, справа — наше каноническое имя.
+ALIASES: dict[str, str] = {
+    "US500": "SPX500",
+    "SPX": "SPX500",
+    "USTEC": "NAS100",
+    "NAS": "NAS100",
+    "NDX": "NAS100",
+    "DJI": "US30",
+    "DAX": "DE40",
+    "DE30": "DE40",
+    "GOLD": "XAU/USD",
+    "SILVER": "XAG/USD",
+    "UKOIL": "BRENT",
+    "USOIL": "WTI",
+    "BCO": "BRENT",
+    "XTIUSD": "WTI",
+    "XBRUSD": "BRENT",
 }
 
 # Обратная карта — чтобы показывать человеку понятное имя.
@@ -101,15 +122,24 @@ _NY = ZoneInfo("America/New_York")
 
 
 def normalize_symbol(symbol: str) -> str:
-    """USD/CAD, usd-cad, USDCAD -> USD/CAD (наш вид)."""
+    """USD/CAD, usd-cad, USDCAD, USTEC -> каноническое имя.
+
+    Люди переносят названия прямо из своего терминала, а там одно и то же
+    зовётся по-разному: US500 против SPX500, USTEC против NAS100.
+    """
     raw = symbol.strip().upper().replace("_", "/").replace("-", "/")
     if raw in SYMBOL_MAP:
         return raw
+    if raw in ALIASES:
+        return ALIASES[raw]
+
     # Человек мог написать без разделителя: USDCAD.
     if "/" not in raw and len(raw) == 6:
         candidate = f"{raw[:3]}/{raw[3:]}"
         if candidate in SYMBOL_MAP:
             return candidate
+        if candidate in ALIASES:
+            return ALIASES[candidate]
     return raw
 
 

@@ -238,6 +238,136 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+# --------------------------------------------------------------------------- #
+# Пакетное добавление
+# --------------------------------------------------------------------------- #
+
+# Готовые наборы: перечислять четырнадцать инструментов по одному — работа,
+# которую машина должна делать за человека.
+PRESETS: dict[str, tuple[str, list[tuple[str, str]]]] = {
+    "forex": (
+        "Основные валютные пары",
+        [(s, "yahoo") for s in
+         ("EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD")],
+    ),
+    "metals": (
+        "Металлы",
+        [("XAU/USD", "yahoo"), ("XAG/USD", "yahoo")],
+    ),
+    "energy": (
+        "Энергоносители",
+        [("BRENT", "yahoo"), ("WTI", "yahoo"), ("NATGAS", "yahoo")],
+    ),
+    "indices": (
+        "Индексы",
+        [("SPX500", "yahoo"), ("NAS100", "yahoo"), ("US30", "yahoo"), ("DE40", "yahoo")],
+    ),
+    "crypto": (
+        "Крипта",
+        [("BTC/USDT", "binance"), ("ETH/USDT", "binance"), ("SOL/USDT", "binance")],
+    ),
+}
+
+
+def _parse_bulk(args: list[str]) -> list[tuple[str, str]]:
+    """Разбирает список инструментов.
+
+    Площадка задаётся суффиксом через @ либо угадывается: всё с USDT — это
+    крипта на бирже, остальное — валюты и сырьё через Yahoo. Угадывание
+    избавляет от необходимости писать площадку у каждого из четырнадцати.
+    """
+    parsed: list[tuple[str, str]] = []
+    for raw in args:
+        token = raw.strip().strip(",")
+        if not token:
+            continue
+        if "@" in token:
+            symbol, _, exchange = token.partition("@")
+        else:
+            symbol = token
+            exchange = "binance" if "USDT" in symbol.upper() else "yahoo"
+        parsed.append((symbol, exchange.lower() or "yahoo"))
+    return parsed
+
+
+async def _add_many(
+    message: Message, user: User, items: list[tuple[str, str]]
+) -> None:
+    status = await message.answer(f"⏳ Добавляю {len(items)}…")
+
+    added, skipped, failed = [], [], []
+
+    for symbol, exchange in items:
+        try:
+            meta = await registry.validate_candidate(symbol, exchange)
+        except SymbolNotFound as exc:
+            hint = f" (похоже на {exc.suggestions[0]})" if exc.suggestions else ""
+            failed.append(f"{symbol}: не найден{hint}")
+            continue
+        except registry.RegistryError as exc:
+            skipped.append(f"{symbol}: {exc}")
+            continue
+        except Exception as exc:  # noqa: BLE001 — площадка может отвалиться как угодно
+            failed.append(f"{symbol}: {str(exc)[:60]}")
+            continue
+
+        keywords, _ = await suggest_keywords(meta.symbol)
+        instrument = await registry.add_instrument(
+            meta=meta,
+            exchange=exchange,
+            keywords=keywords,
+            added_by=user.tg_id,
+            round_step=derive_round_step(meta.last_price),
+        )
+        await registry.subscribe(user.tg_id, instrument.id)
+
+        delay = int(meta.extra.get("delay_minutes", 0))
+        mark = f" ⏱{delay}м" if delay else ""
+        added.append(f"{instrument.symbol} — {meta.last_price:g}{mark}")
+
+    lines = []
+    if added:
+        lines.append(f"<b>✅ Добавлено ({len(added)})</b>")
+        lines += [f"  {x}" for x in added]
+    if skipped:
+        lines.append(f"\n<b>⏭ Пропущено ({len(skipped)})</b>")
+        lines += [f"  {x}" for x in skipped]
+    if failed:
+        lines.append(f"\n<b>❌ Не вышло ({len(failed)})</b>")
+        lines += [f"  {x}" for x in failed]
+    if any("⏱" in x for x in added):
+        lines.append("\n<i>⏱ — котировка отстаёт на столько минут.</i>")
+
+    await status.edit_text("\n".join(lines) or "Нечего добавлять.")
+
+
+@router.message(Command("add_many"))
+async def cmd_add_many(message: Message, command: CommandObject, user: User) -> None:
+    args = (command.args or "").replace(",", " ").split()
+
+    if not args:
+        presets = "\n".join(
+            f"<code>/add_many {key}</code> — {title.lower()}, {len(items)} шт."
+            for key, (title, items) in PRESETS.items()
+        )
+        await message.answer(
+            "<b>Пакетное добавление</b>\n\n"
+            "Списком через пробел:\n"
+            "<code>/add_many EURUSD XAUUSD BRENT US500</code>\n\n"
+            "Площадка угадывается: всё с USDT идёт на биржу, остальное через "
+            "Yahoo. Можно указать явно: <code>SOL/USDT@bybit</code>\n\n"
+            "<b>Готовые наборы</b>\n" + presets
+        )
+        return
+
+    if len(args) == 1 and args[0].lower() in PRESETS:
+        title, items = PRESETS[args[0].lower()]
+        await _add_many(message, user, items)
+        return
+
+    await _add_many(message, user, _parse_bulk(args))
+
+
 @router.message(Command("instruments"))
 async def cmd_instruments(message: Message) -> None:
     instruments = await registry.list_instruments()
