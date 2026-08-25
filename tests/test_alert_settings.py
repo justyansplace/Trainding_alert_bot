@@ -195,3 +195,51 @@ async def test_personal_cooldown_reaches_detector(db) -> None:
     mapping = await alerts.cooldown_by_user([1, 2])
     assert mapping[1] == timedelta(hours=8)
     assert 2 not in mapping, "у кого не задано — берётся общий дефолт"
+
+
+# --------------------------------------------------------------------------- #
+# Формула процентного порога
+# --------------------------------------------------------------------------- #
+
+
+def test_percent_threshold_is_measured_from_level_not_price() -> None:
+    """Сигнал, когда |уровень − цена| ≤ уровень × ставка.
+
+    Считать процент от текущей цены было бы неверно: полоса срабатывания
+    ползла бы вместе с ней, и один и тот же порог означал бы разную ширину
+    в разные моменты. Уровень неподвижен — от него и считаем.
+    """
+    from alert_bot.market.detector import LevelSnapshot, evaluate_level
+
+    level = LevelSnapshot(
+        id=1, price=81000.0, score=999.0, kinds=("manual",),
+        state="armed", cooldown_until=None, notified_users=(),
+    )
+    sub = Subscriber(1, 0.0, atr_k=99.0, unit="percent", threshold_pct=0.25)
+    cooldown = __import__("datetime").timedelta(hours=4)
+
+    # Порог = 81000 × 0.25% = 202.5, то есть срабатывание на 80797.5
+    just_outside = 81000 - 210
+    just_inside = 81000 - 195
+
+    decision = evaluate_level(
+        level, just_outside, [just_outside - 50, just_outside], 700.0, [sub],
+        NOW, cooldown,
+    )
+    assert decision.event is None, "за полосой сигнала быть не должно"
+
+    decision = evaluate_level(
+        level, just_inside, [just_inside - 50, just_inside], 700.0, [sub],
+        NOW, cooldown,
+    )
+    assert decision.event is not None, "внутри полосы сигнал обязан быть"
+
+
+def test_percent_band_has_constant_width() -> None:
+    """Ширина полосы не зависит от того, где сейчас цена."""
+    sub = Subscriber(1, 0.0, atr_k=99.0, unit="percent", threshold_pct=0.5)
+
+    # Одинаковое расстояние в процентах от уровня даёт одинаковый reach,
+    # независимо от абсолютных значений.
+    assert sub.reach(0.0, 0.5) == pytest.approx(1.0)
+    assert sub.reach(0.0, 0.25) == pytest.approx(0.5)

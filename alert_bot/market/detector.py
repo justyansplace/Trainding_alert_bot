@@ -50,6 +50,9 @@ class Subscriber:
 
         Обе единицы приводятся к общей доле, чтобы дальше сравнивать
         подписчиков между собой независимо от того, кто в чём мерит.
+
+        В процентном режиме порог — это доля от цены уровня:
+        сигнал, когда |уровень − цена| ≤ уровень × ставка%.
         """
         if self.unit == "percent":
             return distance_pct / self.threshold_pct if self.threshold_pct > 0 else 9e9
@@ -153,7 +156,13 @@ def evaluate_level(
         return unchanged
 
     distance_atr = abs(price - level.price) / atr
-    distance_pct = abs(price - level.price) / price * 100 if price > 0 else 9e9
+    # Процент считается от цены УРОВНЯ, а не от текущей. Уровень неподвижен,
+    # поэтому полоса срабатывания получается постоянной шириной; если считать
+    # от цены, полоса плыла бы вместе с ней и порог значил бы разное в разные
+    # моменты.
+    distance_pct = (
+        abs(price - level.price) / level.price * 100 if level.price > 0 else 9e9
+    )
 
     # --- Гистерезис: цена ушла достаточно далеко, уровень перезаряжается. ---
     if level.state == LevelState.TRIGGERED.value:
