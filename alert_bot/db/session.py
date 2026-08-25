@@ -11,6 +11,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from alert_bot.config import get_settings
+from alert_bot.db import migrate
 from alert_bot.db.models import Base, Role, Source, SourceKind, User, utcnow
 
 log = logging.getLogger(__name__)
@@ -71,7 +72,12 @@ async def init_db() -> None:
     """Создаёт таблицы, заводит админа и сид-источники."""
     engine = get_engine()
     async with engine.begin() as conn:
+        # Сначала колонки в уже существующих таблицах: create_all их не трогает,
+        # и новая колонка в модели просто не появилась бы в старой базе.
+        added = await migrate.apply(conn)
         await conn.run_sync(Base.metadata.create_all)
+    if added:
+        log.info("Миграция: добавлено колонок — %s", added)
 
     settings = get_settings()
     async with session_scope() as session:

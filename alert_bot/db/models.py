@@ -62,6 +62,21 @@ class Role(str, enum.Enum):
     USER = "user"
 
 
+class ThresholdUnit(str, enum.Enum):
+    """В чём задан порог срабатывания."""
+
+    ATR = "atr"
+    PERCENT = "percent"
+
+
+class Direction(str, enum.Enum):
+    """Какие подходы к уровню интересуют."""
+
+    ANY = "any"
+    UP = "up"       # цена идёт вверх, к уровню сверху
+    DOWN = "down"   # цена идёт вниз, к уровню снизу
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -78,6 +93,19 @@ class User(Base):
     # Глобальные дефолты юзера; пер-инструментные оверрайды — в Subscription.
     def_min_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     def_atr_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # В чём мерить расстояние до уровня. ATR подстраивается под волатильность
+    # инструмента, процент проще понять — но один и тот же процент для BTC и
+    # для валютной пары означает совершенно разную близость.
+    def_threshold_unit: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    def_threshold_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Персональные предохранители вместо общих на всех.
+    def_cooldown_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_alerts_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Какие подходы интересуют: сверху, снизу или любые.
+    direction_filter: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -150,6 +178,8 @@ class Subscription(Base):
     # NULL = взять дефолт юзера, а тот при NULL — дефолт из конфига.
     min_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     atr_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold_unit: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    threshold_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     muted_until: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

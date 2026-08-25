@@ -12,6 +12,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 from alert_bot.bot import (
     admin,
+    alert_settings,
     admin_instruments,
     admin_sources,
     errors,
@@ -31,7 +32,8 @@ USER_COMMANDS = [
     BotCommand(command="mylevels", description="Мои уровни"),
     BotCommand(command="subscribe", description="Инструменты"),
     BotCommand(command="brief", description="Сводка по новостям"),
-    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="alerts", description="Настройка алертов"),
+    BotCommand(command="settings", description="Тихие часы и прочее"),
     BotCommand(command="mute", description="Пауза алертов"),
     BotCommand(command="status", description="Статус"),
     BotCommand(command="help", description="Справка"),
@@ -56,6 +58,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(menu.router)
     dp.include_router(handlers.router)
     dp.include_router(level_handlers.router)
+    dp.include_router(alert_settings.router)
     dp.include_router(settings_handlers.router)
     dp.include_router(admin_instruments.router)
     dp.include_router(admin_sources.router)

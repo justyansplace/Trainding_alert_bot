@@ -41,12 +41,20 @@ class Settings(BaseSettings):
     news_poll_seconds: int = 600
 
     # --- Предохранители ---
-    max_instruments: int = 10
+    # Ограничение не техническое, а про нагрузку на площадки: тик опрашивает
+    # каждый инструмент. При TICK_CONCURRENCY=3 и кэше ответов двадцать штук
+    # укладываются в лимиты Binance и Yahoo с большим запасом.
+    max_instruments: int = 25
     max_alerts_per_user_per_day: int = 25
     daily_llm_budget_usd: float = 0.25
 
     # --- Дефолты детектора ---
     default_atr_k: float = 0.3
+    # Порог в процентах. Не эквивалент 0.3xATR: у BTC 0.3xATR это ~0.26%, у
+    # валютной пары ~0.026% — на порядок меньше. Процент проще понять, но он
+    # не подстраивается под волатильность инструмента.
+    default_threshold_pct: float = 0.25
+    default_threshold_unit: str = "atr"
     default_min_score: float = 4.0
     cooldown_hours: int = 4
 

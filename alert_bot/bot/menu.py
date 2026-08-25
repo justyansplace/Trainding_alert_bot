@@ -35,7 +35,10 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕ Добавить уровень", callback_data="menu:addlevel"),
             InlineKeyboardButton(text="📌 Мои уровни", callback_data="menu:mylevels"),
         ],
-        [InlineKeyboardButton(text="🔔 Инструменты", callback_data="menu:subscribe")],
+        [
+            InlineKeyboardButton(text="🔔 Настройка алертов", callback_data="menu:alerts"),
+        ],
+        [InlineKeyboardButton(text="📈 Инструменты", callback_data="menu:subscribe")],
         [
             InlineKeyboardButton(text="📰 Сводка", callback_data="menu:brief"),
             InlineKeyboardButton(text="📊 Статус", callback_data="menu:status"),
@@ -105,6 +108,7 @@ def _command_list(items: list[tuple[str, str]]) -> str:
 USER_COMMAND_LIST = [
     ("/addlevel BTC/USDT 78000", "поставить уровень"),
     ("/mylevels", "мои уровни — изменить или удалить"),
+    ("/alerts", "порог, направление, лимиты"),
     ("/subscribe", "выбрать инструменты"),
     ("/brief", "сводка по новостям"),
     ("/status", "состояние и цены"),
@@ -140,6 +144,9 @@ HELP_TEXT = (
     "• Повторно по тому же уровню бот не пишет, пока цена не уйдёт и не "
     "вернётся — иначе сообщения шли бы очередью.\n\n"
     "• Уровень можно изменить или удалить — нажмите на него в списке.\n\n"
+    "• Порог задаётся в ATR или в процентах — кнопка «Настройка алертов». "
+    "ATR подстраивается под волатильность инструмента, процент проще "
+    "соотнести с графиком.\n\n"
     "<b>Команды</b>\n\n" + _command_list(USER_COMMAND_LIST) + "\n\n" + DISCLAIMER
 )
 

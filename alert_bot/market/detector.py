@@ -38,15 +38,49 @@ class Subscriber:
     min_score: float
     atr_k: float
     muted_until: datetime | None = None
+    unit: str = "atr"
+    threshold_pct: float = 0.3
+    direction: str = "any"
 
     def is_muted(self, now: datetime) -> bool:
         return self.muted_until is not None and now < self.muted_until
 
-    def accepts(self, score: float, distance_atr: float, now: datetime) -> bool:
+    def reach(self, distance_atr: float, distance_pct: float) -> float:
+        """Насколько цена «дошла» до порога: 1.0 — ровно на пороге.
+
+        Обе единицы приводятся к общей доле, чтобы дальше сравнивать
+        подписчиков между собой независимо от того, кто в чём мерит.
+        """
+        if self.unit == "percent":
+            return distance_pct / self.threshold_pct if self.threshold_pct > 0 else 9e9
+        return distance_atr / self.atr_k if self.atr_k > 0 else 9e9
+
+    def wants_direction(self, price: float, level_price: float) -> bool:
+        """Интересует ли подход с этой стороны.
+
+        «Вверх» означает, что цена идёт к уровню снизу — то есть уровень выше
+        текущей цены и работает как сопротивление.
+        """
+        if self.direction == "up":
+            return level_price >= price
+        if self.direction == "down":
+            return level_price <= price
+        return True
+
+    def accepts(
+        self,
+        score: float,
+        distance_atr: float,
+        now: datetime,
+        distance_pct: float = 0.0,
+        price: float = 0.0,
+        level_price: float = 0.0,
+    ) -> bool:
         return (
             not self.is_muted(now)
             and score >= self.min_score
-            and distance_atr <= self.atr_k
+            and self.reach(distance_atr, distance_pct) <= 1.0
+            and self.wants_direction(price, level_price)
         )
 
 
@@ -119,6 +153,7 @@ def evaluate_level(
         return unchanged
 
     distance_atr = abs(price - level.price) / atr
+    distance_pct = abs(price - level.price) / price * 100 if price > 0 else 9e9
 
     # --- Гистерезис: цена ушла достаточно далеко, уровень перезаряжается. ---
     if level.state == LevelState.TRIGGERED.value:
@@ -130,8 +165,8 @@ def evaluate_level(
             )
     else:
         # --- Вход в зону по самому широкому порогу среди подписчиков. ---
-        widest = max(s.atr_k for s in subscribers)
-        if distance_atr > widest:
+        # Пороги приводятся к общей доле, поэтому ATR и проценты сравнимы.
+        if min(s.reach(distance_atr, distance_pct) for s in subscribers) > 1.0:
             return unchanged
         if level.cooldown_until is not None and now < level.cooldown_until:
             return unchanged
@@ -143,7 +178,8 @@ def evaluate_level(
     recipients = [
         s.tg_id
         for s in subscribers
-        if s.tg_id not in already and s.accepts(level.score, distance_atr, now)
+        if s.tg_id not in already
+        and s.accepts(level.score, distance_atr, now, distance_pct, price, level.price)
     ]
 
     if not recipients:
@@ -199,7 +235,9 @@ def detect_breakout(
     recipients = [
         s.tg_id
         for s in subscribers
-        if not s.is_muted(now) and level.score >= s.min_score
+        if not s.is_muted(now)
+        and level.score >= s.min_score
+        and s.wants_direction(closed_close, level.price)
     ]
     if not recipients:
         return None

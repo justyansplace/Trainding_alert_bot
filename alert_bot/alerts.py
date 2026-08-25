@@ -45,8 +45,13 @@ async def load_subscribers(instrument_id: int) -> list[Subscriber]:
                     Subscription.min_score,
                     Subscription.atr_k,
                     Subscription.muted_until,
+                    Subscription.threshold_unit,
+                    Subscription.threshold_pct,
                     User.def_min_score,
                     User.def_atr_k,
+                    User.def_threshold_unit,
+                    User.def_threshold_pct,
+                    User.direction_filter,
                 )
                 .join(User, User.tg_id == Subscription.tg_id)
                 .where(
@@ -57,21 +62,46 @@ async def load_subscribers(instrument_id: int) -> list[Subscriber]:
             )
         ).all()
 
+    def pick(*values, fallback):  # noqa: ANN001, ANN202
+        """Подписка -> дефолт пользователя -> дефолт конфига."""
+        for value in values:
+            if value is not None:
+                return value
+        return fallback
+
     return [
         Subscriber(
-            tg_id=tg_id,
-            min_score=(
-                sub_score
-                if sub_score is not None
-                else (def_score if def_score is not None else settings.default_min_score)
+            tg_id=row.tg_id,
+            min_score=pick(row.min_score, row.def_min_score, fallback=settings.default_min_score),
+            atr_k=pick(row.atr_k, row.def_atr_k, fallback=settings.default_atr_k),
+            unit=pick(
+                row.threshold_unit, row.def_threshold_unit,
+                fallback=settings.default_threshold_unit,
             ),
-            atr_k=(
-                sub_k if sub_k is not None else (def_k if def_k is not None else settings.default_atr_k)
+            threshold_pct=pick(
+                row.threshold_pct, row.def_threshold_pct,
+                fallback=settings.default_threshold_pct,
             ),
-            muted_until=muted,
+            direction=pick(row.direction_filter, fallback="any"),
+            muted_until=row.muted_until,
         )
-        for tg_id, sub_score, sub_k, muted, def_score, def_k in rows
+        for row in rows
     ]
+
+
+async def cooldown_by_user(tg_ids: list[int]) -> dict[int, timedelta]:
+    """Персональная пауза после срабатывания, где она задана."""
+    if not tg_ids:
+        return {}
+    async with session_scope() as session:
+        rows = (
+            await session.execute(
+                select(User.tg_id, User.def_cooldown_hours).where(User.tg_id.in_(tg_ids))
+            )
+        ).all()
+    return {
+        tg_id: timedelta(hours=hours) for tg_id, hours in rows if hours
+    }
 
 
 def in_quiet_hours(user: User, now: datetime) -> bool:
@@ -125,7 +155,8 @@ async def filter_recipients(recipients: tuple[int, ...], now: datetime) -> list[
         if in_quiet_hours(user, now):
             log.debug("tg_id=%s в тихих часах", tg_id)
             continue
-        if await alerts_sent_last_day(tg_id, now) >= settings.max_alerts_per_user_per_day:
+        limit = user.max_alerts_per_day or settings.max_alerts_per_user_per_day
+        if await alerts_sent_last_day(tg_id, now) >= limit:
             log.info("tg_id=%s достиг дневного потолка алертов", tg_id)
             continue
         allowed.append(tg_id)

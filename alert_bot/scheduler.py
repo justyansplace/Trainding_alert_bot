@@ -149,6 +149,7 @@ class PriceLoop:
         settings = get_settings()
         cooldown = timedelta(hours=settings.cooldown_hours)
         thresholds = {s.tg_id: s for s in await alerts.load_subscribers(instrument.id)}
+        personal = await alerts.cooldown_by_user(list(thresholds))
 
         rows.sort(key=lambda r: abs(r.price - state.last_price))
         fired_for: set[int] = set()
@@ -158,11 +159,16 @@ class PriceLoop:
             if owner is None:
                 continue  # автор отписался от инструмента — молчим, но уровень храним
 
+            # min_score обнуляется: фильтровать по значимости уровень, который
+            # человек поставил сам, бессмысленно. Остальные настройки — его.
             subscriber = Subscriber(
                 tg_id=owner.tg_id,
                 min_score=0.0,
                 atr_k=owner.atr_k,
                 muted_until=owner.muted_until,
+                unit=owner.unit,
+                threshold_pct=owner.threshold_pct,
+                direction=owner.direction,
             )
 
             decision = evaluate_level(
@@ -172,7 +178,7 @@ class PriceLoop:
                 state.atr,
                 [subscriber],
                 now,
-                cooldown,
+                personal.get(row.tg_id, cooldown),
             )
 
             if decision.event is not None and row.tg_id in fired_for:
