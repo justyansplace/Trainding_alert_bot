@@ -21,7 +21,9 @@ RUN useradd --create-home --uid 10001 botuser \
     && chown -R botuser:botuser /app
 USER botuser
 
-VOLUME ["/app/data"]
+# Инструкции VOLUME здесь намеренно нет: Railway её не принимает и отклоняет
+# сборку целиком. Каталог /app/data подключается снаружи — в docker-compose
+# через bind mount, на Railway через их собственный Volume.
 
 # Контейнер «запущен» и бот работает — разные вещи: цикл цены может уткнуться
 # в зависший сокет, пока процесс формально жив. Проверяется возраст пульса,
