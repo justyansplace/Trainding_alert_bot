@@ -1,0 +1,42 @@
+[project]
+name = "alert-bot"
+version = "0.1.0"
+description = "Telegram bot: technical level alerts with analyst news context"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiogram>=3.15",
+    "anthropic>=0.40",
+    "openai>=1.60",
+    "ccxt>=4.4",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "SQLAlchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20",
+    "aiohttp>=3.10",
+    "feedparser>=6.0",
+    "yfinance>=0.2.40",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "tenacity>=9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["alert_bot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

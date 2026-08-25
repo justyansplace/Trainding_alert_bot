@@ -1,0 +1,24 @@
+# Секреты и данные
+.env
+data/
+backups/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Окружение и артефакты сборки
+.venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Кэши инструментов
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ОС
+.DS_Store
