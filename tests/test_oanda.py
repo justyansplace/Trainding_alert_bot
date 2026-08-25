@@ -292,3 +292,45 @@ def test_cleaning_keeps_meaningful_precision() -> None:
     assert yahoo._clean(0.09096) == 0.09096
     assert yahoo._clean(80750.12) == 80750.12
     assert yahoo._clean(1.16725) == 1.16725
+
+
+# --------------------------------------------------------------------------- #
+# HTTP-проверка живости (нужна платформам вроде Railway)
+# --------------------------------------------------------------------------- #
+
+
+def test_port_read_only_when_platform_sets_it(monkeypatch) -> None:
+    """Локально и в docker compose PORT не задан — лишний сокет не открывается."""
+    from alert_bot import webhealth
+
+    monkeypatch.delenv("PORT", raising=False)
+    assert webhealth.port_from_env() is None
+
+    monkeypatch.setenv("PORT", "8080")
+    assert webhealth.port_from_env() == 8080
+
+    monkeypatch.setenv("PORT", "не-число")
+    assert webhealth.port_from_env() is None
+
+
+async def test_health_endpoint_reflects_heartbeat(db, monkeypatch, tmp_path) -> None:
+    """503 при мёртвом цикле — иначе платформа не узнает, что бот встал.
+
+    Docker умеет выполнять команду внутри контейнера, Railway ходит только
+    HTTP-запросом снаружи, и без этого пути живость там не проверяется вовсе.
+    """
+    import time
+
+    from alert_bot import health
+
+    heartbeat = tmp_path / "heartbeat"
+    monkeypatch.setattr(health, "heartbeat_path", lambda: heartbeat)
+
+    assert health.check()[0] is False, "без пульса — нездоров"
+
+    heartbeat.write_text(str(time.time()))
+    assert health.check()[0] is True
+
+    heartbeat.write_text(str(time.time() - 99999))
+    healthy, detail = health.check()
+    assert healthy is False and "протух" in detail

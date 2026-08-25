@@ -25,6 +25,7 @@ from alert_bot.health import clear_heartbeat
 from alert_bot.market.providers.ccxt_provider import close_all_exchanges
 from alert_bot.market.providers.oanda_provider import close_session as close_oanda
 from alert_bot.scheduler import NewsLoop, PriceLoop
+from alert_bot.webhealth import port_from_env, start_health_server
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +53,16 @@ class Runtime:
         self.price_loop = PriceLoop(notifier=self.notifier)
         self.news_loop = NewsLoop(admin_notifier=self.notifier)
         self.tasks: list[asyncio.Task] = []
+        self._health_runner = None
 
     async def start(self) -> None:
+        # Платформы вроде Railway проверяют живость только HTTP-запросом
+        # снаружи; локально и в docker compose PORT не задан, и сокет
+        # не открывается.
+        port = port_from_env()
+        if port is not None:
+            self._health_runner = await start_health_server(port)
+
         self.tasks = [
             asyncio.create_task(self.notifier.run(), name="notifier"),
             asyncio.create_task(self.price_loop.run(), name="price_loop"),
@@ -78,6 +87,9 @@ class Runtime:
         for task in self.tasks:
             with suppress(asyncio.CancelledError):
                 await task
+
+        if self._health_runner is not None:
+            await self._health_runner.cleanup()
 
         await close_all_exchanges()
         await close_oanda()

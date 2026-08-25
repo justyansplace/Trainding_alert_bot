@@ -189,6 +189,14 @@ Crontab, ежедневно в 04:00:
 
 Восстановление: распаковать `.gz` поверх `data/alert_bot.db` при остановленном боте.
 
+### Railway
+
+Пятнадцать минут, около $5/мес: [deploy/RAILWAY.md](deploy/RAILWAY.md).
+
+Два шага там критичны, и ошибка в них проявляется не сразу: **регион EU West**
+(Binance отдаёт 451 американским IP) и **том на /app/data** (без него база
+стирается при каждом деплое). Конфиг сборки — [railway.toml](railway.toml).
+
 ### Без Docker
 
 Готовый systemd-юнит: [`deploy/alert-bot.service`](deploy/alert-bot.service),

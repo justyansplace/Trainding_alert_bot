@@ -240,6 +240,13 @@ class PriceLoop:
     async def run(self) -> None:
         settings = get_settings()
         log.info("Цикл цены запущен, интервал %s c", settings.price_poll_seconds)
+
+        # Пульс ставится до первого тика, а не после. Холодный старт с
+        # несколькими инструментами занимает десятки секунд — за это время
+        # проверка живости успевала бы решить, что цикл мёртв, и платформа
+        # перезапускала бы контейнер по кругу.
+        touch_heartbeat()
+
         while not self._stopping.is_set():
             try:
                 await self.tick()
