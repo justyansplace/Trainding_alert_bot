@@ -1,0 +1,36 @@
+services:
+  bot:
+    build: .
+    image: alert-bot:latest
+    container_name: alert-bot
+    restart: unless-stopped
+
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/alert_bot.db
+      TZ: UTC
+
+    volumes:
+      # SQLite лежит на хосте: пересборка образа не должна стирать уровни,
+      # историю алертов и накопленные новости.
+      - ./data:/app/data
+
+    # Telegram не допускает два одновременных getUpdates на один токен: второй
+    # экземпляр отбирает обновления у первого, и алерты начинают теряться.
+    # Поэтому строго одна реплика.
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          # Пик приходится на почасовой пересчёт ATR: 700 свечей в pandas.
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 20s

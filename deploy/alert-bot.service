@@ -1,0 +1,48 @@
+# systemd-юнит — альтернатива Docker, если ставить его на сервер не хочется.
+#
+#   sudo cp deploy/alert-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now alert-bot
+#   sudo journalctl -u alert-bot -f
+#
+# Предполагается, что проект лежит в /opt/alert-bot, а venv создан там же:
+#   python3.12 -m venv /opt/alert-bot/.venv
+#   /opt/alert-bot/.venv/bin/pip install -e /opt/alert-bot
+
+[Unit]
+Description=Alert Bot — Telegram-алерты по ценовым уровням
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/alert-bot
+EnvironmentFile=/opt/alert-bot/.env
+ExecStart=/opt/alert-bot/.venv/bin/python -m alert_bot.main
+
+# Бот переживает сбои сети сам, но не переживёт падение процесса. Перезапуск
+# всегда, с паузой — чтобы при устойчивой ошибке (сломанный токен) не крутиться
+# в цикле рестартов.
+Restart=always
+RestartSec=15
+
+# SIGTERM обрабатывается: aiogram останавливает polling, очередь рассылки
+# успевает опустеть. Даём на это время до принудительного убийства.
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+# Процесс ходит в сеть и разбирает чужой ввод — ограничиваем, что ему доступно.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/alert-bot/data /opt/alert-bot/backups
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alert-bot
+
+[Install]
+WantedBy=multi-user.target
