@@ -35,14 +35,47 @@ def heartbeat_path() -> Path:
     return get_settings().db_path.parent / HEARTBEAT_FILENAME
 
 
+_write_failed_logged = False
+
+
 def touch_heartbeat() -> None:
     """Отметка «цикл сделал оборот». Ошибки записи не должны ронять цикл."""
+    global _write_failed_logged
     try:
         path = heartbeat_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(time.time()), encoding="utf-8")
-    except OSError:
-        log.debug("не удалось записать пульс", exc_info=True)
+    except OSError as exc:
+        # Один раз громко, дальше молча: если каталог недоступен на запись,
+        # это повторяется каждый оборот цикла. Молчать нельзя — снаружи это
+        # выглядит как «сервис нездоров» без единого намёка на причину.
+        if not _write_failed_logged:
+            log.error("Не удаётся записать пульс в %s: %s", heartbeat_path(), exc)
+            _write_failed_logged = True
+
+
+def check_data_dir_writable() -> tuple[bool, str]:
+    """Доступен ли каталог данных на запись.
+
+    Частая причина на хостингах: том подключается от root, а процесс работает
+    от непривилегированного пользователя. Тогда молча не пишется ни база, ни
+    пульс, и наружу это выглядит просто как «healthcheck failure».
+    """
+    from alert_bot.config import get_settings
+
+    directory = get_settings().db_path.parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True, f"каталог данных доступен на запись: {directory}"
+    except OSError as exc:
+        return False, (
+            f"КАТАЛОГ ДАННЫХ НЕДОСТУПЕН НА ЗАПИСЬ: {directory} ({exc}). "
+            f"На хостинге это обычно значит, что том подключён от root, "
+            f"а процесс работает от uid {os.getuid()}."
+        )
 
 
 def clear_heartbeat() -> None:

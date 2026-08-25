@@ -21,7 +21,7 @@ from alert_bot.bot.main import build_bot, build_dispatcher, set_commands
 from alert_bot.bot.notifier import Notifier
 from alert_bot.config import get_settings
 from alert_bot.db.session import dispose_engine, init_db
-from alert_bot.health import clear_heartbeat
+from alert_bot.health import check_data_dir_writable, clear_heartbeat
 from alert_bot.market.providers.ccxt_provider import close_all_exchanges
 from alert_bot.market.providers.oanda_provider import close_session as close_oanda
 from alert_bot.scheduler import NewsLoop, PriceLoop
@@ -56,13 +56,6 @@ class Runtime:
         self._health_runner = None
 
     async def start(self) -> None:
-        # Платформы вроде Railway проверяют живость только HTTP-запросом
-        # снаружи; локально и в docker compose PORT не задан, и сокет
-        # не открывается.
-        port = port_from_env()
-        if port is not None:
-            self._health_runner = await start_health_server(port)
-
         self.tasks = [
             asyncio.create_task(self.notifier.run(), name="notifier"),
             asyncio.create_task(self.price_loop.run(), name="price_loop"),
@@ -88,9 +81,6 @@ class Runtime:
             with suppress(asyncio.CancelledError):
                 await task
 
-        if self._health_runner is not None:
-            await self._health_runner.cleanup()
-
         await close_all_exchanges()
         await close_oanda()
         clear_heartbeat()
@@ -100,6 +90,27 @@ async def run() -> None:
     setup_logging()
     settings = get_settings()
 
+    # HTTP-проверка поднимается до всего остального. Если дальше что-то упадёт —
+    # недоступный том, отвергнутый токен, — платформа увидит внятную причину по
+    # /health, а не голое «healthcheck failure» без единого намёка.
+    health_runner = None
+    port = port_from_env()
+    if port is not None:
+        health_runner = await start_health_server(port)
+    else:
+        log.info("PORT не задан — HTTP-проверка живости не поднимается")
+
+    writable, message = check_data_dir_writable()
+    log.info(message) if writable else log.error(message)
+
+    try:
+        await _serve(settings)
+    finally:
+        if health_runner is not None:
+            await health_runner.cleanup()
+
+
+async def _serve(settings) -> None:  # noqa: ANN001
     await init_db()
     log.info("БД готова: %s", settings.db_path)
 

@@ -56,5 +56,5 @@ async def start_health_server(port: int) -> web.AppRunner:
     # означает, что проверка не достучится и сервис будет вечно «нездоров».
     await web.TCPSite(runner, host="0.0.0.0", port=port).start()  # noqa: S104
 
-    log.info("HTTP-проверка живости слушает порт %s", port)
+    log.info("HTTP-проверка живости слушает 0.0.0.0:%s, путь /health", port)
     return runner
