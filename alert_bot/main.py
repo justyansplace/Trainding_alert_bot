@@ -133,9 +133,52 @@ async def _serve(settings) -> None:  # noqa: ANN001
         log.info("Остановлен")
 
 
+REQUIRED_HINT = {
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN — токен от @BotFather",
+    "admin_tg_id": "ADMIN_TG_ID — ваш числовой id, узнать у @userinfobot",
+    "openai_api_key": "OPENAI_API_KEY — ключ с platform.openai.com",
+    "anthropic_api_key": "ANTHROPIC_API_KEY — ключ с console.anthropic.com",
+}
+
+
+def _report_bad_config(error: Exception) -> None:
+    """Понятное сообщение вместо стектрейса на сотню строк.
+
+    Не заданная переменная — самая частая ошибка первого запуска на хостинге, и
+    разбирать её по стектрейсу пайдантика тяжело: платформа перезапускает
+    процесс несколько раз, вывод нескольких попыток перемешивается, и настоящая
+    причина тонет.
+    """
+    missing = []
+    for item in getattr(error, "errors", lambda: [])():
+        if item.get("type") == "missing":
+            field = str(item["loc"][0])
+            missing.append(REQUIRED_HINT.get(field, field.upper()))
+
+    print("=" * 62, file=sys.stderr)
+    print("НЕ ЗАПУСКАЮСЬ: не заданы обязательные переменные окружения", file=sys.stderr)
+    print("=" * 62, file=sys.stderr)
+    for line in missing or [str(error)]:
+        print(f"  • {line}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Локально: заполните .env (шаблон в .env.example).", file=sys.stderr)
+    print(
+        "На хостинге: задайте их в настройках сервиса — файл .env туда "
+        "не попадает и не должен.",
+        file=sys.stderr,
+    )
+    print("Проверить всё разом: python -m scripts.check_setup", file=sys.stderr)
+    print("=" * 62, file=sys.stderr)
+
+
 def main() -> None:
+    from pydantic import ValidationError
+
     try:
         asyncio.run(run())
+    except ValidationError as error:
+        _report_bad_config(error)
+        sys.exit(1)
     except (KeyboardInterrupt, SystemExit):
         pass
 
