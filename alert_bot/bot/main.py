@@ -1,0 +1,98 @@
+"""Сборка Telegram-бота: Bot, Dispatcher, роутеры, middleware."""
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+
+from alert_bot.bot import (
+    admin,
+    admin_instruments,
+    admin_sources,
+    errors,
+    handlers,
+    level_handlers,
+    menu,
+    settings_handlers,
+)
+from alert_bot.bot.access import AccessMiddleware
+from alert_bot.config import get_settings
+
+log = logging.getLogger(__name__)
+
+USER_COMMANDS = [
+    BotCommand(command="start", description="Меню"),
+    BotCommand(command="addlevel", description="Поставить уровень"),
+    BotCommand(command="mylevels", description="Мои уровни"),
+    BotCommand(command="subscribe", description="Инструменты"),
+    BotCommand(command="brief", description="Сводка по новостям"),
+    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="mute", description="Пауза алертов"),
+    BotCommand(command="status", description="Статус"),
+    BotCommand(command="help", description="Справка"),
+]
+
+
+def build_bot() -> Bot:
+    settings = get_settings()
+    return Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+
+def build_dispatcher() -> Dispatcher:
+    dp = Dispatcher(storage=MemoryStorage())
+
+    # AccessMiddleware кладёт User в data['user'] и отсекает чужих до хендлеров.
+    dp.message.middleware(AccessMiddleware())
+    dp.callback_query.middleware(AccessMiddleware())
+
+    dp.include_router(menu.router)
+    dp.include_router(handlers.router)
+    dp.include_router(level_handlers.router)
+    dp.include_router(settings_handlers.router)
+    dp.include_router(admin_instruments.router)
+    dp.include_router(admin_sources.router)
+    dp.include_router(admin.router)
+
+    # Последним: перехватывает то, что не поймали хендлеры.
+    dp.include_router(errors.router)
+
+    return dp
+
+
+# Админские команды. Telegram показывает подсказку по «/» только для тех команд,
+# что зарегистрированы для этого чата, поэтому админу список ставится отдельно —
+# иначе половина возможностей бота существует, но нигде не видна.
+ADMIN_COMMANDS = [
+    BotCommand(command="add_instrument", description="Добавить инструмент"),
+    BotCommand(command="instruments", description="Список инструментов"),
+    BotCommand(command="rm_instrument", description="Отключить инструмент"),
+    BotCommand(command="add_source", description="Добавить ленту новостей"),
+    BotCommand(command="sources", description="Источники и их здоровье"),
+    BotCommand(command="toggle_source", description="Включить/отключить ленту"),
+    BotCommand(command="rm_source", description="Удалить ленту"),
+    BotCommand(command="gen_invite", description="Создать код доступа"),
+    BotCommand(command="invites", description="Неиспользованные коды"),
+    BotCommand(command="users", description="Список людей"),
+    BotCommand(command="revoke", description="Отозвать доступ"),
+    BotCommand(command="usage", description="Расход на модель"),
+]
+
+
+async def set_commands(bot: Bot) -> None:
+    settings = get_settings()
+    await bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
+    try:
+        await bot.set_my_commands(
+            USER_COMMANDS + ADMIN_COMMANDS,
+            scope=BotCommandScopeChat(chat_id=settings.admin_tg_id),
+        )
+    except Exception:  # noqa: BLE001 — админ мог ещё не открыть чат с ботом
+        log.warning("Не удалось поставить админские команды", exc_info=True)
