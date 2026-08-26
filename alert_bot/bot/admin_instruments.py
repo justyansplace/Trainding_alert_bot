@@ -19,7 +19,12 @@ from alert_bot.bot.access import AdminOnlyMiddleware, fmt_dt
 from alert_bot.db.models import User
 from alert_bot.llm.keywords import suggest_keywords
 from alert_bot.market import registry
-from alert_bot.market.providers.base import SymbolMeta, SymbolNotFound, derive_round_step
+from alert_bot.market.providers.base import (
+    ExchangeBanned,
+    SymbolMeta,
+    SymbolNotFound,
+    derive_round_step,
+)
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +33,16 @@ router.message.middleware(AdminOnlyMiddleware())
 router.callback_query.middleware(AdminOnlyMiddleware())
 
 DEFAULT_EXCHANGE = "binance"
+
+# Что предложить, когда площадка отказала по частоте запросов. Бан висит на
+# IP целиком, поэтому «попробуйте ещё раз» — плохой совет: он же его и
+# продлевает. А вот другая биржа даёт те же пары прямо сейчас.
+BAN_HINT = (
+    "\n\nБан висит на IP сервера, а не на символе, и каждый запрос во время "
+    "паузы её продлевает — поэтому бот к этой площадке пока не ходит.\n\n"
+    "Те же пары есть на других биржах:\n"
+    "<code>/add_many BTC/USDT@bybit ETH/USDT@bybit</code>"
+)
 
 
 class AddInstrument(StatesGroup):
@@ -106,6 +121,9 @@ async def cmd_add_instrument(
 
     try:
         meta = await registry.validate_candidate(symbol, exchange)
+    except ExchangeBanned as exc:
+        await status.edit_text(f"⏳ {exc}{BAN_HINT}")
+        return
     except SymbolNotFound as exc:
         hint = ""
         if exc.suggestions:
@@ -296,10 +314,17 @@ async def _add_many(
     status = await message.answer(f"⏳ Добавляю {len(items)}…")
 
     added, skipped, failed = [], [], []
+    banned: dict[str, ExchangeBanned] = {}
 
     for symbol, exchange in items:
         try:
             meta = await registry.validate_candidate(symbol, exchange)
+        except ExchangeBanned as exc:
+            # Пауза общая на площадку: остальные её символы отвалятся так же,
+            # но проверить их всё равно надо — вдруг часть списка с Yahoo.
+            banned[exc.exchange] = exc
+            failed.append(f"{symbol}: {exchange} на паузе")
+            continue
         except SymbolNotFound as exc:
             hint = f" (похоже на {exc.suggestions[0]})" if exc.suggestions else ""
             failed.append(f"{symbol}: не найден{hint}")
@@ -337,6 +362,8 @@ async def _add_many(
         lines += [f"  {x}" for x in failed]
     if any("⏱" in x for x in added):
         lines.append("\n<i>⏱ — котировка отстаёт на столько минут.</i>")
+    for exc in banned.values():
+        lines.append(f"\n⏳ {exc}{BAN_HINT}")
 
     await status.edit_text("\n".join(lines) or "Нечего добавлять.")
 

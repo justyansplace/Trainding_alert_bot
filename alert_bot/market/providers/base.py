@@ -35,6 +35,25 @@ class SymbolNotFound(Exception):
         super().__init__(f"символ {symbol!r} не найден")
 
 
+class ExchangeBanned(Exception):
+    """Площадка отказывает по частоте запросов с этого IP.
+
+    Отдельный тип, а не общая ошибка сети: причина не в символе и не в
+    доступности площадки, и говорить о ней человеку надо иначе — ждать, а не
+    проверять тикер. Живёт здесь, а не в ccxt-провайдере: ограничивать частоту
+    умеет любой источник, а знать про конкретный из них планировщику незачем.
+    """
+
+    def __init__(self, exchange: str, seconds_left: float) -> None:
+        self.exchange = exchange
+        self.seconds_left = max(0, int(seconds_left))
+        self.minutes_left = max(1, round(self.seconds_left / 60))
+        super().__init__(
+            f"{exchange} ограничила частоту запросов с этого IP (418/429). "
+            f"Запросы к ней возобновятся примерно через {self.minutes_left} мин."
+        )
+
+
 class DataProvider(ABC):
     name: str
 

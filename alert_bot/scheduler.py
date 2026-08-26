@@ -23,7 +23,7 @@ from alert_bot.db.models import Instrument
 from alert_bot.market import registry, store, user_levels
 from alert_bot.market.detector import Subscriber, evaluate_level
 from alert_bot.market.indicators import atr
-from alert_bot.market.providers.base import get_provider
+from alert_bot.market.providers.base import ExchangeBanned, get_provider
 from alert_bot.llm.brief import make_brief
 from alert_bot.news import extract, ingest
 from alert_bot.news.context import build_context
@@ -229,6 +229,13 @@ class PriceLoop:
         async def guarded(instrument: Instrument) -> None:
             try:
                 await self.process_instrument(instrument, now)
+            except ExchangeBanned as exc:
+                # Пауза по частоте запросов — состояние, а не происшествие: она
+                # длится до часа, а тик идёт раз в десять секунд, и warning на
+                # каждый инструмент утопил бы лог в тысячах одинаковых строк.
+                # Сам факт паузы записан один раз при её начале.
+                log.debug("%s: %s", instrument.symbol, exc)
+                await store.touch_instrument(instrument.id, None, error=str(exc)[:300])
             except Exception as exc:  # noqa: BLE001 — падение одного не валит цикл
                 log.warning("%s: тик не удался: %s", instrument.symbol, exc)
                 await store.touch_instrument(instrument.id, None, error=str(exc)[:300])

@@ -3,6 +3,19 @@
 Инстанс биржи — один на всех инструментов этой биржи (ccxt сам держит троттлер
 на инстансе, поэтому несколько инстансов = обход собственного rate limit и путь
 к бану по IP). Сверху общий семафор на число одновременных запросов.
+
+Про бан по IP. Binance отвечает 418 после того, как ответы 429 были
+проигнорированы, и бан у неё нарастающий: от двух минут до трёх суток, причём
+каждый запрос во время бана продлевает его. Поэтому 418/429 здесь означает не
+«повторить позже», а «прекратить ходить на эту площадку совсем» — до конца
+паузы запросы даже не уходят в сеть. Иначе цикл цены с его тиком в десять
+секунд держал бы бан бесконечно, а причину было бы не отличить от поломки
+символа: пользователь видит «не вышло добавить BTC», хотя дело не в BTC.
+
+Бан общий на IP, а не на ключ или символ, поэтому и пауза общая на площадку.
+На арендованном хостинге адрес разделяется с чужими сервисами, так что бан
+может прилететь и без вины бота — тем более важно его пережидать, а не
+разгонять.
 """
 
 from __future__ import annotations
@@ -11,12 +24,14 @@ import asyncio
 import difflib
 import logging
 import math
+import time
 
 import ccxt.async_support as ccxt
 import pandas as pd
 
 from alert_bot.market.providers.base import (
     DataProvider,
+    ExchangeBanned,
     SymbolMeta,
     SymbolNotFound,
     register_provider,
@@ -29,6 +44,63 @@ _semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
 _exchanges: dict[str, ccxt.Exchange] = {}
 _markets_loaded: set[str] = set()
 _load_lock = asyncio.Lock()
+
+# Сколько ждать после отказа по частоте. Шаги растут, потому что растёт и сам
+# бан у площадки: повторное нарушение стоит дороже первого.
+_BACKOFF_SECONDS = (120, 300, 900, 1800, 3600)
+
+_banned_until: dict[str, float] = {}
+_ban_level: dict[str, int] = {}
+
+
+def ban_seconds_left(exchange: str) -> float:
+    """Сколько осталось до конца паузы. Ноль — паузы нет."""
+    return max(0.0, _banned_until.get(exchange, 0.0) - time.monotonic())
+
+
+def _raise_if_banned(exchange: str) -> None:
+    left = ban_seconds_left(exchange)
+    if left > 0:
+        raise ExchangeBanned(exchange, left)
+
+
+def _register_ban(exchange: str) -> ExchangeBanned:
+    level = _ban_level.get(exchange, 0)
+    delay = _BACKOFF_SECONDS[min(level, len(_BACKOFF_SECONDS) - 1)]
+    _ban_level[exchange] = level + 1
+    _banned_until[exchange] = time.monotonic() + delay
+    log.warning(
+        "%s ответила отказом по частоте запросов; пауза %s c (нарушение №%s)",
+        exchange, delay, level + 1,
+    )
+    return ExchangeBanned(exchange, delay)
+
+
+def _clear_ban(exchange: str) -> None:
+    """Успешный ответ снимает эскалацию: следующий бан снова начнётся с малого."""
+    if _ban_level.pop(exchange, None) is not None:
+        _banned_until.pop(exchange, None)
+
+
+def reset_bans() -> None:
+    _banned_until.clear()
+    _ban_level.clear()
+
+
+async def _call(exchange: str, request):  # noqa: ANN001, ANN202
+    """Единственная точка, через которую уходят запросы к площадке.
+
+    Запрос принимается функцией, а не готовой корутиной: во время паузы он не
+    должен даже создаваться, иначе получаем несожранную корутину и предупреждение
+    вместо тишины.
+    """
+    _raise_if_banned(exchange)
+    try:
+        result = await request()
+    except (ccxt.DDoSProtection, ccxt.RateLimitExceeded) as exc:
+        raise _register_ban(exchange) from exc
+    _clear_ban(exchange)
+    return result
 
 
 async def _get_exchange(name: str) -> ccxt.Exchange:
@@ -47,7 +119,7 @@ async def _ensure_markets(exchange: ccxt.Exchange, name: str) -> None:
     async with _load_lock:
         if name in _markets_loaded:
             return
-        await exchange.load_markets()
+        await _call(name, exchange.load_markets)
         _markets_loaded.add(name)
 
 
@@ -82,6 +154,7 @@ async def close_all_exchanges() -> None:
             log.warning("не удалось закрыть биржу %s", name, exc_info=True)
     _exchanges.clear()
     _markets_loaded.clear()
+    reset_bans()
 
 
 @register_provider
@@ -92,6 +165,7 @@ class CcxtProvider(DataProvider):
         self.exchange_name = exchange
 
     async def _exchange(self) -> ccxt.Exchange:
+        _raise_if_banned(self.exchange_name)
         ex = await _get_exchange(self.exchange_name)
         await _ensure_markets(ex, self.exchange_name)
         return ex
@@ -106,7 +180,7 @@ class CcxtProvider(DataProvider):
 
         market = ex.markets[symbol]
         async with _semaphore:
-            ticker = await ex.fetch_ticker(symbol)
+            ticker = await _call(self.exchange_name, lambda: ex.fetch_ticker(symbol))
 
         last = ticker.get("last") or ticker.get("close")
         if last is None:
@@ -123,7 +197,10 @@ class CcxtProvider(DataProvider):
     async def fetch_ohlcv(self, symbol: str, tf: str, limit: int = 500) -> pd.DataFrame:
         ex = await self._exchange()
         async with _semaphore:
-            rows = await ex.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+            rows = await _call(
+                self.exchange_name,
+                lambda: ex.fetch_ohlcv(symbol, timeframe=tf, limit=limit),
+            )
 
         df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "v"])
         df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
