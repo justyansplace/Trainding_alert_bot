@@ -359,14 +359,22 @@ def test_terminal_names_are_understood(terminal_name: str, canonical: str) -> No
 
 def test_bulk_parser_guesses_venue() -> None:
     """Площадка угадывается, чтобы не писать её у каждого из четырнадцати."""
-    from alert_bot.bot.admin_instruments import _parse_bulk
+    from alert_bot.bot.admin_instruments import DEFAULT_EXCHANGE, _parse_bulk
 
-    assert _parse_bulk(["EURUSD", "BTC/USDT", "SOL/USDT@bybit", "US500"]) == [
+    assert _parse_bulk(["EURUSD", "BTC/USDT", "SOL/USDT@binance", "US500"]) == [
         ("EURUSD", "yahoo"),
-        ("BTC/USDT", "binance"),
-        ("SOL/USDT", "bybit"),
+        ("BTC/USDT", DEFAULT_EXCHANGE),
+        ("SOL/USDT", "binance"),
         ("US500", "yahoo"),
     ]
+
+
+def test_both_ways_of_adding_guess_the_same_venue() -> None:
+    """Иначе одна пара уезжала бы на разные биржи от того, какой командой её завели."""
+    from alert_bot.bot import admin_instruments as ai
+
+    assert ai._parse_bulk(["BTC/USDT"])[0][1] == ai.DEFAULT_EXCHANGE
+    assert all(venue == ai.DEFAULT_EXCHANGE for _, venue in ai.PRESETS["crypto"][1])
 
 
 def test_bulk_parser_tolerates_commas_and_blanks() -> None:

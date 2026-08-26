@@ -32,17 +32,38 @@ router = Router(name="admin_instruments")
 router.message.middleware(AdminOnlyMiddleware())
 router.callback_query.middleware(AdminOnlyMiddleware())
 
-DEFAULT_EXCHANGE = "binance"
+# Площадка по умолчанию для крипты — одна константа на оба пути добавления:
+# и на /add_instrument без третьего слова, и на угадывание в /add_many. Двумя
+# значениями они бы разъехались, и одна и та же пара уезжала бы на разные
+# биржи в зависимости от того, какой командой её завели.
+#
+# Не Binance: она банит по IP (418, см. ExchangeBanned), а на арендованном
+# хостинге адрес общий с чужими сервисами, поэтому бан прилетает регулярно и
+# без вины бота. Расхождение котировок между биржами — 0.006% в среднем и
+# 0.04% в худшем случае, то есть меньше самого мелкого шага порога (0.05%):
+# на момент срабатывания алерта выбор биржи повлиять не может. Зато Bybit
+# отдаёт до 720 часовых свечей за запрос против 300 у OKX, а циклу нужно 200.
+DEFAULT_EXCHANGE = "bybit"
 
-# Что предложить, когда площадка отказала по частоте запросов. Бан висит на
-# IP целиком, поэтому «попробуйте ещё раз» — плохой совет: он же его и
-# продлевает. А вот другая биржа даёт те же пары прямо сейчас.
-BAN_HINT = (
-    "\n\nБан висит на IP сервера, а не на символе, и каждый запрос во время "
-    "паузы её продлевает — поэтому бот к этой площадке пока не ходит.\n\n"
-    "Те же пары есть на других биржах:\n"
-    "<code>/add_many BTC/USDT@bybit ETH/USDT@bybit</code>"
-)
+# Куда уходить, если площадка на паузе. Порядок — очередь запасных: берётся
+# первая, которая не та, что отказала.
+CRYPTO_VENUES = ("bybit", "okx", "binance")
+
+
+def ban_hint(exchange: str) -> str:
+    """Что предложить, когда площадка отказала по частоте запросов.
+
+    «Попробуйте ещё раз» — плохой совет: бан висит на IP целиком, и повтор его
+    же и продлевает. А другая биржа даёт те же пары прямо сейчас: расхождение
+    котировок между ними меньше самого мелкого шага порога.
+    """
+    spare = next((v for v in CRYPTO_VENUES if v != exchange), CRYPTO_VENUES[0])
+    return (
+        "\n\nБан висит на IP сервера, а не на символе, и каждый запрос во время "
+        "паузы её продлевает — поэтому бот к этой площадке пока не ходит.\n\n"
+        "Те же пары есть на других биржах:\n"
+        f"<code>/add_many BTC/USDT@{spare} ETH/USDT@{spare}</code>"
+    )
 
 
 class AddInstrument(StatesGroup):
@@ -103,9 +124,10 @@ async def cmd_add_instrument(
     if not args:
         await message.answer(
             "Использование: <code>/add_instrument SYMBOL [площадка]</code>\n\n"
-            "<b>Крипта</b> (по умолчанию binance):\n"
+            f"<b>Крипта</b> (по умолчанию {DEFAULT_EXCHANGE}):\n"
             "<code>/add_instrument BTC/USDT</code>\n"
-            "<code>/add_instrument SOL/USDT bybit</code>\n\n"
+            "<code>/add_instrument SOL/USDT okx</code>\n"
+            "<code>/add_instrument BTC/USDT binance</code>\n\n"
             "<b>Валюты, металлы, нефть</b> — площадка <code>yahoo</code>:\n"
             "<code>/add_instrument USD/CAD yahoo</code>\n"
             "<code>/add_instrument AUD/USD yahoo</code>\n"
@@ -122,7 +144,7 @@ async def cmd_add_instrument(
     try:
         meta = await registry.validate_candidate(symbol, exchange)
     except ExchangeBanned as exc:
-        await status.edit_text(f"⏳ {exc}{BAN_HINT}")
+        await status.edit_text(f"⏳ {exc}{ban_hint(exc.exchange)}")
         return
     except SymbolNotFound as exc:
         hint = ""
@@ -282,7 +304,7 @@ PRESETS: dict[str, tuple[str, list[tuple[str, str]]]] = {
     ),
     "crypto": (
         "Крипта",
-        [("BTC/USDT", "binance"), ("ETH/USDT", "binance"), ("SOL/USDT", "binance")],
+        [(s, DEFAULT_EXCHANGE) for s in ("BTC/USDT", "ETH/USDT", "SOL/USDT")],
     ),
 }
 
@@ -291,8 +313,9 @@ def _parse_bulk(args: list[str]) -> list[tuple[str, str]]:
     """Разбирает список инструментов.
 
     Площадка задаётся суффиксом через @ либо угадывается: всё с USDT — это
-    крипта на бирже, остальное — валюты и сырьё через Yahoo. Угадывание
-    избавляет от необходимости писать площадку у каждого из четырнадцати.
+    крипта на DEFAULT_EXCHANGE, остальное — валюты и сырьё через Yahoo.
+    Угадывание избавляет от необходимости писать площадку у каждого из
+    четырнадцати.
     """
     parsed: list[tuple[str, str]] = []
     for raw in args:
@@ -303,7 +326,7 @@ def _parse_bulk(args: list[str]) -> list[tuple[str, str]]:
             symbol, _, exchange = token.partition("@")
         else:
             symbol = token
-            exchange = "binance" if "USDT" in symbol.upper() else "yahoo"
+            exchange = DEFAULT_EXCHANGE if "USDT" in symbol.upper() else "yahoo"
         parsed.append((symbol, exchange.lower() or "yahoo"))
     return parsed
 
@@ -363,7 +386,7 @@ async def _add_many(
     if any("⏱" in x for x in added):
         lines.append("\n<i>⏱ — котировка отстаёт на столько минут.</i>")
     for exc in banned.values():
-        lines.append(f"\n⏳ {exc}{BAN_HINT}")
+        lines.append(f"\n⏳ {exc}{ban_hint(exc.exchange)}")
 
     await status.edit_text("\n".join(lines) or "Нечего добавлять.")
 
@@ -381,8 +404,9 @@ async def cmd_add_many(message: Message, command: CommandObject, user: User) -> 
             "<b>Пакетное добавление</b>\n\n"
             "Списком через пробел:\n"
             "<code>/add_many EURUSD XAUUSD BRENT US500</code>\n\n"
-            "Площадка угадывается: всё с USDT идёт на биржу, остальное через "
-            "Yahoo. Можно указать явно: <code>SOL/USDT@bybit</code>\n\n"
+            f"Площадка угадывается: всё с USDT идёт на {DEFAULT_EXCHANGE}, "
+            "остальное через Yahoo. Можно указать явно: "
+            "<code>SOL/USDT@okx</code>\n\n"
             "<b>Готовые наборы</b>\n" + presets
         )
         return
