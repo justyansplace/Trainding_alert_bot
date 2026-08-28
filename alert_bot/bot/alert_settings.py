@@ -11,6 +11,7 @@
 
 Поэтому у каждой единицы свой ползунок и свой набор шагов: переключение не
 пересчитывает одно в другое, а вспоминает последнее значение для этой единицы.
+У процентов сетка ровная, по 0.01 — их человек читает как число с графика.
 """
 
 from __future__ import annotations
@@ -33,7 +34,14 @@ router = Router(name="alert_settings")
 # Шаги ползунков подобраны так, чтобы соседние значения давали заметно разную
 # частоту алертов, а не отличались косметически.
 ATR_STEPS = [0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5]
-PCT_STEPS = [0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 1.0, 1.5, 2.5]
+
+# Проценты идут ровной сеткой по 0.01, а не подобранной лестницей: человек
+# мыслит «0.07%», а не «шестым шагом», и подгонять свой порог под чужой набор
+# значений ему незачем. ATR — другое дело: там шаг 0.01 неразличим на глаз.
+#
+# Потолок 2.5%: выше порога автоархива ставить нечего, уровень уедет в архив
+# раньше, чем цена успеет подойти к нему на такое расстояние.
+PCT_STEPS = [round(i * 0.01, 2) for i in range(1, 251)]
 COOLDOWN_STEPS = [1, 2, 4, 8, 12, 24]
 CAP_STEPS = [5, 10, 25, 50, 100]
 
@@ -54,10 +62,52 @@ def shift(value: float, steps: list, direction: int):  # noqa: ANN001, ANN202
     return steps[index]
 
 
+# Ширина шкалы в символах. Сетка процентов длиннее — она масштабируется.
+BAR_CELLS = 11
+
+
 def _bar(value: float, steps: list) -> str:  # noqa: ANN001
-    """Наглядная шкала: где текущее значение среди возможных."""
+    """Наглядная шкала: где текущее значение среди возможных.
+
+    Короткая сетка рисуется один-в-один. Длинная — масштабируется в ту же
+    ширину: у процентов 250 шагов, и точка на каждый дала бы строку, которая
+    не влезает ни в один экран.
+    """
     index = _nearest(value, steps)
-    return "".join("●" if i == index else "·" for i in range(len(steps)))
+    if len(steps) <= BAR_CELLS:
+        return "".join("●" if i == index else "·" for i in range(len(steps)))
+    cell = round(index / (len(steps) - 1) * (BAR_CELLS - 1))
+    return "".join("●" if i == cell else "·" for i in range(BAR_CELLS))
+
+
+def steps_from(arg: str) -> int:
+    """Сколько шагов сдвинуть. Понимает и «+»/«−» из уже отправленных экранов."""
+    if arg in ("+", "-"):
+        return 1 if arg == "+" else -1
+    try:
+        return int(arg)
+    except ValueError:
+        return 0
+
+
+def threshold_buttons(unit: str, prefix: str) -> list[InlineKeyboardButton]:
+    """Кнопки шага порога.
+
+    У процентов сетка по 0.01, и одной парой кнопок дойти с 0.25 до 1.00 —
+    семьдесят пять нажатий. Поэтому в процентном режиме пара крупная и пара
+    мелкая: мелкая правит сотые, крупная переносит на 0.10.
+    """
+    if unit == ThresholdUnit.PERCENT.value:
+        return [
+            InlineKeyboardButton(text="−0.10", callback_data=f"{prefix}:-10"),
+            InlineKeyboardButton(text="−0.01", callback_data=f"{prefix}:-1"),
+            InlineKeyboardButton(text="+0.01", callback_data=f"{prefix}:+1"),
+            InlineKeyboardButton(text="+0.10", callback_data=f"{prefix}:+10"),
+        ]
+    return [
+        InlineKeyboardButton(text="◀️ Ближе", callback_data=f"{prefix}:-1"),
+        InlineKeyboardButton(text="Дальше ▶️", callback_data=f"{prefix}:+1"),
+    ]
 
 
 def resolve(user: User) -> dict:
@@ -93,9 +143,10 @@ def render(user: User) -> tuple[str, InlineKeyboardMarkup]:
         threshold_line = f"<code>{current['pct']:.2f} %</code> от цены уровня"
         scale = _bar(current["pct"], PCT_STEPS)
         explain = (
-            "Сигнал, когда |уровень − цена| ≤ уровень × ставка. Процент проще "
-            "соотнести с графиком, но не учитывает волатильность: 0.25% для BTC — "
-            "это близко, для валютной пары — очень далеко."
+            "Сигнал, когда |уровень − цена| ≤ уровень × ставка. Меньше значение — "
+            "ближе к уровню должна подойти цена. Процент проще соотнести с "
+            "графиком, но не учитывает волатильность: 0.25% для BTC — это близко, "
+            "для валютной пары — очень далеко."
         )
 
     text = (
@@ -120,10 +171,7 @@ def render(user: User) -> tuple[str, InlineKeyboardMarkup]:
                     callback_data="as:unit:percent",
                 ),
             ],
-            [
-                InlineKeyboardButton(text="◀️ Ближе", callback_data="as:thr:-"),
-                InlineKeyboardButton(text="Дальше ▶️", callback_data="as:thr:+"),
-            ],
+            threshold_buttons(current["unit"], "as:thr"),
             [
                 InlineKeyboardButton(
                     text=f"Направление: {DIRECTION_LABEL[current['direction']]}",
@@ -164,7 +212,7 @@ async def _mutate(tg_id: int, action: str, arg: str) -> User:
                 user.def_threshold_pct = current["pct"]
 
         elif action == "thr":
-            step = 1 if arg == "+" else -1
+            step = steps_from(arg)
             if current["unit"] == ThresholdUnit.ATR.value:
                 user.def_atr_k = shift(current["atr_k"], ATR_STEPS, step)
             else:
@@ -175,11 +223,11 @@ async def _mutate(tg_id: int, action: str, arg: str) -> User:
             user.direction_filter = order[(order.index(current["direction"]) + 1) % len(order)]
 
         elif action == "cd":
-            step = 1 if arg == "+" else -1
+            step = steps_from(arg)
             user.def_cooldown_hours = int(shift(current["cooldown"], COOLDOWN_STEPS, step))
 
         elif action == "cap":
-            step = 1 if arg == "+" else -1
+            step = steps_from(arg)
             user.max_alerts_per_day = int(shift(current["cap"], CAP_STEPS, step))
 
         elif action == "reset":

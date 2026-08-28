@@ -15,7 +15,14 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 
-from alert_bot.bot.alert_settings import ATR_STEPS, PCT_STEPS, resolve, shift
+from alert_bot.bot.alert_settings import (
+    ATR_STEPS,
+    PCT_STEPS,
+    resolve,
+    shift,
+    steps_from,
+    threshold_buttons,
+)
 from alert_bot.db.models import Subscription, ThresholdUnit, User, utcnow  # noqa: F401
 from alert_bot.db.session import session_scope
 from alert_bot.market import registry
@@ -88,13 +95,12 @@ async def cmd_mute(message: Message, command: CommandObject, user: User) -> None
     )
 
 
-def _settings_kb() -> InlineKeyboardMarkup:
+def _settings_kb(user: User) -> InlineKeyboardMarkup:
+    # Кнопки те же, что на экране настройки алертов: шаг порога не должен
+    # зависеть от того, с какого экрана его двигают.
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️ Ближе", callback_data="set:atr:-"),
-                InlineKeyboardButton(text="Дальше ▶️", callback_data="set:atr:+"),
-            ],
+            threshold_buttons(resolve(user)["unit"], "set:atr"),
             [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:home")],
         ]
     )
@@ -135,13 +141,13 @@ def _settings_text(user: User) -> str:
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, user: User) -> None:
-    await message.answer(_settings_text(user), reply_markup=_settings_kb())
+    await message.answer(_settings_text(user), reply_markup=_settings_kb(user))
 
 
 @router.callback_query(F.data == "menu:settings")
 async def cb_menu_settings(callback: CallbackQuery, user: User) -> None:
     assert callback.message is not None
-    await callback.message.edit_text(_settings_text(user), reply_markup=_settings_kb())
+    await callback.message.edit_text(_settings_text(user), reply_markup=_settings_kb(user))
     await callback.answer()
 
 
@@ -215,7 +221,7 @@ async def cb_settings(callback: CallbackQuery, user: User) -> None:
     """
     assert callback.data is not None
     _, _field, direction = callback.data.split(":")
-    step = 1 if direction == "+" else -1
+    step = steps_from(direction)
 
     async with session_scope() as session:
         stored = await session.get(User, user.tg_id)
@@ -229,7 +235,7 @@ async def cb_settings(callback: CallbackQuery, user: User) -> None:
         refreshed = stored
 
     assert callback.message is not None
-    await callback.message.edit_text(_settings_text(refreshed), reply_markup=_settings_kb())
+    await callback.message.edit_text(_settings_text(refreshed), reply_markup=_settings_kb(refreshed))
     await callback.answer("Сохранено")
 
 

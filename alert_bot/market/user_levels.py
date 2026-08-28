@@ -31,6 +31,7 @@ from alert_bot.db.models import (
 )
 from alert_bot.db.session import session_scope
 from alert_bot.market.detector import LevelSnapshot
+from alert_bot.threshold import pct_between
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,10 @@ MANUAL_KIND = "manual"
 MANUAL_SCORE = 1_000.0
 
 MAX_LEVELS_PER_USER_PER_INSTRUMENT = 20
+
+# Почему уровень исчез из списка. Причина хранится, чтобы отличать уборку
+# ботом от удаления руками: во втором случае человек знает, что сделал.
+ARCHIVE_PRICE_LEFT = "price_left"
 
 # Насколько близко к существующему уровню считается тем же самым.
 DUPLICATE_TOLERANCE_PCT = 0.0005
@@ -55,6 +60,18 @@ class UserLevelError(Exception):
 class LevelStats:
     active: int
     triggers: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedLevel:
+    """Что нужно сказать человеку об убранном уровне."""
+
+    id: int
+    tg_id: int
+    price: float
+    note: str | None
+    trigger_count: int
+    distance_pct: float
 
 
 async def add_level(
@@ -156,6 +173,64 @@ async def update_note(tg_id: int, level_id: int, note: str | None) -> UserLevel 
             return None
         level.note = (note or "").strip()[:200] or None
         return level
+
+
+async def archive_stale(
+    instrument_id: int, price: float, threshold_pct: float
+) -> list[ArchivedLevel]:
+    """Убирает уровни, от которых цена ушла дальше порога.
+
+    Архив, а не удаление: журнал срабатываний переживает архивацию, и по
+    убранной отметке всё ещё видно, как рынок её отрабатывал. Обратно уровень
+    не возвращается — если он снова нужен, его ставят заново, и это честнее,
+    чем воскрешать отметку, о которой человек уже забыл.
+
+    Расстояние считается от цены уровня — как и порог срабатывания. Иначе
+    «далеко» на одном конце и «близко» на другом мерились бы разными линейками.
+    """
+    if threshold_pct <= 0 or price <= 0:
+        return []
+
+    archived: list[ArchivedLevel] = []
+    now = utcnow()
+
+    async with session_scope() as session:
+        levels = (
+            await session.scalars(
+                select(UserLevel).where(
+                    UserLevel.instrument_id == instrument_id,
+                    UserLevel.active.is_(True),
+                )
+            )
+        ).all()
+
+        for level in levels:
+            if level.price <= 0:
+                continue
+            gap = pct_between(level.price, price)
+            if gap <= threshold_pct:
+                continue
+
+            level.active = False
+            level.archived_at = now
+            level.archive_reason = ARCHIVE_PRICE_LEFT
+            archived.append(
+                ArchivedLevel(
+                    id=level.id,
+                    tg_id=level.tg_id,
+                    price=level.price,
+                    note=level.note,
+                    trigger_count=level.trigger_count,
+                    distance_pct=gap,
+                )
+            )
+
+    if archived:
+        log.info(
+            "Инструмент %s: в архив ушло уровней — %s (цена %.6g)",
+            instrument_id, len(archived), price,
+        )
+    return archived
 
 
 async def list_levels(tg_id: int, instrument_id: int | None = None) -> list[UserLevel]:

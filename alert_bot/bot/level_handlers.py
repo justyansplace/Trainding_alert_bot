@@ -20,9 +20,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from alert_bot.bot.access import fmt_dt
 from alert_bot.bot.menu import back_kb
+from alert_bot.config import get_settings
 from alert_bot.db.models import User
 from alert_bot.market import registry, user_levels
-from alert_bot.threshold import gap_text, unit_of
+from alert_bot.threshold import gap_text, pct_between, unit_of
 
 log = logging.getLogger(__name__)
 
@@ -527,6 +528,20 @@ async def _create_level(message: Message, user: User, instrument, price: float, 
             "\n\n⚠️ Вы не подписаны на этот инструмент — уровень сохранён, но "
             "алерты по нему приходить не будут."
         )
+
+    # Уровень дальше порога автоочистки уедет в архив на ближайшем тике, то
+    # есть через считанные секунды. Молча дать ему исчезнуть — значит оставить
+    # человека гадать, куда делась его отметка.
+    limit = get_settings().auto_archive_pct
+    if limit > 0 and instrument.last_price:
+        gap_pct = pct_between(level.price, instrument.last_price)
+        if gap_pct > limit:
+            warning += (
+                f"\n\n⚠️ <b>Этот уровень дальше {limit:g}% от цены "
+                f"({gap_pct:.2f}%), и автоочистка уберёт его на ближайшем тике.</b>\n"
+                "<i>Ставьте отметки ближе к цене — или отключите автоочистку "
+                "(AUTO_ARCHIVE_PCT=0).</i>"
+            )
 
     await message.answer(
         f"📌 Уровень <code>{_fmt(level.price, instrument.price_precision)}</code> "

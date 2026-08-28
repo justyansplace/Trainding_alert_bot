@@ -142,11 +142,22 @@ class PriceLoop:
         if self._notifier is None or state.last_price is None:
             return
 
+        settings = get_settings()
+
+        # Сначала уборка: уровень, от которого цена ушла дальше порога, не надо
+        # ни считать, ни держать в списке. Диапазоны не пересекаются — порог
+        # срабатывания заведомо уже порога архива, — поэтому уровень не может
+        # в один тик и сработать, и уехать в архив.
+        stale = await user_levels.archive_stale(
+            instrument.id, state.last_price, settings.auto_archive_pct
+        )
+        if stale:
+            self._announce_archived(instrument, stale)
+
         rows = await user_levels.active_levels_for_instrument(instrument.id)
         if not rows:
             return
 
-        settings = get_settings()
         cooldown = timedelta(hours=settings.cooldown_hours)
         thresholds = {s.tg_id: s for s in await alerts.load_subscribers(instrument.id)}
         personal = await alerts.cooldown_by_user(list(thresholds))
@@ -209,6 +220,41 @@ class PriceLoop:
                 user_level=row,
             )
             fired_for.add(row.tg_id)
+
+    def _announce_archived(
+        self, instrument: Instrument, archived: list[user_levels.ArchivedLevel]
+    ) -> None:
+        """Сообщает владельцу, что его отметки убраны.
+
+        Молча убирать то, что человек поставил руками, нельзя: он вернётся к
+        списку и решит, что бот потерял данные. Сообщение идёт мимо дневного
+        потолка алертов — это уведомление о состоянии его же списка, а не
+        сигнал по рынку, и съедать им лимит на алерты неправильно.
+        """
+        if self._notifier is None:
+            return
+
+        by_owner: dict[int, list[user_levels.ArchivedLevel]] = {}
+        for item in archived:
+            by_owner.setdefault(item.tg_id, []).append(item)
+
+        precision = instrument.price_precision
+        threshold = get_settings().auto_archive_pct
+
+        for tg_id, items in by_owner.items():
+            lines = [
+                f"🧹 <b>{instrument.symbol}</b> — уровни убраны",
+                "",
+                f"Цена ушла дальше {threshold:g}%, эти отметки больше "
+                "не отслеживаются:",
+            ]
+            for item in items:
+                price = f"{item.price:,.{precision}f}".replace(",", " ")
+                tail = f" · срабатываний: {item.trigger_count}" if item.trigger_count else ""
+                note = f" · <i>{item.note}</i>" if item.note else ""
+                lines.append(f"• <code>{price}</code> — ушла на {item.distance_pct:.2f}%{tail}{note}")
+            lines += ["", "<i>История срабатываний сохранена. Нужен снова — поставьте заново.</i>"]
+            self._notifier.enqueue(Outgoing(chat_id=tg_id, text="\n".join(lines)))
 
     async def _make_brief(self, instrument: Instrument, event) -> str | None:  # noqa: ANN001
         """Сводка к алерту. Её отсутствие не должно задерживать сам алерт."""

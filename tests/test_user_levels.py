@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from alert_bot import config
 from alert_bot.db.models import (
     Instrument,
     LevelState,
@@ -22,6 +23,25 @@ from alert_bot.market.levels import Level
 from alert_bot.scheduler import PriceLoop
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+
+
+def archive_threshold(monkeypatch, percent: float) -> None:
+    """Порог автоочистки на время теста."""
+    monkeypatch.setenv("AUTO_ARCHIVE_PCT", str(percent))
+    config._settings = None
+
+
+@pytest.fixture(autouse=True)
+def _archive_off(monkeypatch):
+    """По умолчанию автоочистка выключена.
+
+    Тесты вокруг ставят уровни в 3–11% от цены, потому что проверяют пороги
+    срабатывания, а не уборку: с включённой очисткой они молча превратились бы
+    в тесты очистки. Тесты самой очистки включают её явно.
+    """
+    archive_threshold(monkeypatch, 0)
+    yield
+    config._settings = None
 
 
 class StubNotifier:

@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from alert_bot import config
 from alert_bot.db.models import Instrument, LevelState, Subscription, User, utcnow
 from alert_bot.db.session import session_scope
 from alert_bot.market import user_levels
 from alert_bot.scheduler import PriceLoop
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _archive_off(monkeypatch):
+    """Автоочистка выключена: здесь проверяется подавление всплеска.
+
+    Уровни тут стоят в 3–14% от цены — именно чтобы часть из них не проходила
+    порог. С включённой очисткой они уезжали бы в архив, и тесты проверяли бы
+    её, а не то, ради чего написаны.
+    """
+    monkeypatch.setenv("AUTO_ARCHIVE_PCT", "0")
+    config._settings = None
+    yield
+    config._settings = None
 
 
 class StubNotifier:
@@ -75,6 +92,7 @@ async def test_only_nearest_level_fires_per_tick(db) -> None:
     await loop.run_user_levels(instrument, loop.runtime(instrument.id), NOW)
 
     assert len(notifier.sent) == 1, "за тик уходит только ближайший уровень"
+    assert "ваш уровень" in notifier.sent[0].text
     assert "970.00" in notifier.sent[0].text
 
 
