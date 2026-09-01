@@ -40,18 +40,24 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=<из вашего .env>
 TELEGRAM_BOT_TOKEN=<из вашего .env>
 ADMIN_TG_ID=<ваш telegram id>
+ADMIN_TG_IDS=<остальные администраторы через запятую, можно пусто>
 
 DB_PATH=/app/data/alert_bot.db
 PRICE_POLL_SECONDS=30
 NEWS_POLL_SECONDS=600
 
-MAX_INSTRUMENTS=10
+MAX_INSTRUMENTS=25
+MAX_INSTRUMENTS_PER_USER=8
 MAX_ALERTS_PER_USER_PER_DAY=25
+ORPHAN_TTL_HOURS=24
 DAILY_LLM_BUDGET_USD=0.25
 
 DEFAULT_ATR_K=0.3
+DEFAULT_THRESHOLD_PCT=0.25
+DEFAULT_THRESHOLD_UNIT=atr
 DEFAULT_MIN_SCORE=4.0
 COOLDOWN_HOURS=4
+AUTO_ARCHIVE_PCT=3.0
 
 EXTRACTION_MODEL=gpt-5-mini
 BRIEF_MODEL=gpt-5-mini
@@ -59,6 +65,9 @@ BRIEF_MODEL=gpt-5-mini
 
 Отличия от локального `.env`: `DB_PATH` указывает на том, `PRICE_POLL_SECONDS`
 поднят с отладочных 10 до 30 — чаще опрашивать биржи смысла нет.
+
+Локальный `.env` на Railway не попадает — он в `.gitignore`, и в образ его не
+кладут. Переменные живут только здесь, в Variables, и правятся только здесь.
 
 `PORT` Railway подставляет сам, задавать не надо: по нему поднимается эндпоинт
 проверки живости.
