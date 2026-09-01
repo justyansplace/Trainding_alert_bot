@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # --- Секреты ---
     telegram_bot_token: str
     admin_tg_id: int
+
+    # Дополнительные администраторы, через запятую. Роль живёт в БД и выдаётся
+    # командой /grant_admin — это список для холодного старта, чтобы второй
+    # администратор появился вместе с первым, а не после переписки с первым.
+    admin_tg_ids: str = ""
+
     cryptopanic_token: str = ""
 
     # --- OANDA (форекс, металлы, индексы) ---
@@ -45,6 +51,13 @@ class Settings(BaseSettings):
     # каждый инструмент. При TICK_CONCURRENCY=3 и кэше ответов двадцать штук
     # укладываются в лимиты Binance и Yahoo с большим запасом.
     max_instruments: int = 25
+
+    # Сколько инструментов может завести один человек. Общий потолок про
+    # нагрузку на площадки, а этот — про справедливость: без него первый
+    # пришедший занимает все слоты, и следующему добавить уже нечего.
+    # Администраторов не ограничивает: реестр в конечном счёте их забота.
+    max_instruments_per_user: int = 8
+
     max_alerts_per_user_per_day: int = 25
     daily_llm_budget_usd: float = 0.25
 
@@ -77,6 +90,19 @@ class Settings(BaseSettings):
     @property
     def db_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.db_path}"
+
+    @property
+    def admin_ids(self) -> list[int]:
+        """Кому выдать роль администратора при старте. Первый — владелец.
+
+        Владелец отличается от остальных ровно одним: у него нельзя отобрать
+        роль из бота. Иначе два администратора могли бы разжаловать друг друга
+        и запереть себя снаружи.
+        """
+        raw = self.admin_tg_ids.replace(";", ",").split(",")
+        ids = [self.admin_tg_id]
+        ids += [int(p) for p in (x.strip() for x in raw) if p.lstrip("-").isdigit()]
+        return list(dict.fromkeys(ids))
 
 
 _settings: Settings | None = None

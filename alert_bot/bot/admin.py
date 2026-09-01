@@ -14,7 +14,10 @@ from alert_bot.bot.access import (
     RedeemError,
     create_invite,
     fmt_dt,
+    grant_admin,
+    list_admins,
     list_invites,
+    revoke_admin,
     revoke_user,
 )
 from alert_bot.config import get_settings
@@ -80,6 +83,65 @@ async def cmd_revoke(message: Message, command: CommandObject) -> None:
     await message.answer(
         f"⚪ Доступ для <code>{raw}</code> отозван." if ok else f"Пользователь <code>{raw}</code> не найден."
     )
+
+
+@router.message(Command("grant_admin"))
+async def cmd_grant_admin(message: Message, command: CommandObject) -> None:
+    raw = (command.args or "").strip()
+    if not raw.isdigit():
+        await message.answer(
+            "Использование: <code>/grant_admin TG_ID</code>\n\n"
+            "Номер видно в <code>/users</code>. Администратор может всё то же, "
+            "что и вы: выдавать доступ, отзывать его и управлять инструментами "
+            "и лентами."
+        )
+        return
+
+    try:
+        promoted = await grant_admin(int(raw))
+    except RedeemError as exc:
+        await message.answer(f"❌ {exc}")
+        return
+
+    handle = f"@{promoted.username}" if promoted.username else f"<code>{raw}</code>"
+    await message.answer(
+        f"👑 {handle} теперь администратор.\n\n"
+        "<i>Подсказки команд у него обновятся при следующем перезапуске бота — "
+        "Telegram кэширует их на стороне клиента. Сами команды работают сразу.</i>"
+    )
+
+
+@router.message(Command("revoke_admin"))
+async def cmd_revoke_admin(message: Message, command: CommandObject, user: User) -> None:
+    raw = (command.args or "").strip()
+    if not raw.isdigit():
+        await message.answer(
+            "Использование: <code>/revoke_admin TG_ID</code>\n\n"
+            "<i>Доступ к боту при этом остаётся — снимается только роль.</i>"
+        )
+        return
+
+    try:
+        demoted = await revoke_admin(int(raw), by=user.tg_id)
+    except RedeemError as exc:
+        await message.answer(f"❌ {exc}")
+        return
+
+    handle = f"@{demoted.username}" if demoted.username else f"<code>{raw}</code>"
+    await message.answer(f"⚪ {handle} больше не администратор. Доступ к боту остался.")
+
+
+@router.message(Command("admins"))
+async def cmd_admins(message: Message) -> None:
+    settings = get_settings()
+    admins = await list_admins()
+    lines = [f"<b>Администраторы</b> ({len(admins)})\n"]
+    for a in admins:
+        handle = f"@{a.username}" if a.username else "—"
+        owner = " · владелец" if a.tg_id == settings.admin_tg_id else ""
+        lines.append(f"👑 <code>{a.tg_id}</code> {handle}{owner}")
+    lines.append("\n<code>/grant_admin TG_ID</code> · <code>/revoke_admin TG_ID</code>")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("usage"))

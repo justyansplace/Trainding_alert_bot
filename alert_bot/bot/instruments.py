@@ -1,8 +1,19 @@
-"""Админка инструментов: /add_instrument, /instruments, /rm_instrument.
+"""Инструменты: добавление доступно всем, удаление — администратору.
 
 Добавление идёт через подтверждение: сначала символ проверяется у провайдера и
 показывается превью (цена, объём, шаг круглых уровней, ключевые слова), и только
 потом пишется в БД. Опечатка в тикере иначе попадает в реестр и роняет price_loop.
+
+Почему добавляет любой, а отключает только администратор. Реестр общий: одна
+строка на символ и площадку, один опрос на всех подписчиков. Добавление ничего
+чужого не ломает — в худшем случае занимает слот, и от этого есть личная квота.
+А отключение бьёт по всем, кто на инструмент подписан, включая тех, кто
+поставил по нему уровни. Поэтому человеку доступно ровно то, что касается его
+самого: подписаться и отписаться.
+
+Если инструмент в реестре уже есть, второй раз он не заводится: человека просто
+подписывают на существующий. Для него это то же самое действие с тем же
+результатом, а реестр не растёт дубликатами.
 """
 
 from __future__ import annotations
@@ -16,6 +27,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from alert_bot.bot.access import AdminOnlyMiddleware, fmt_dt
+from alert_bot.bot.menu import back_kb
+from alert_bot.config import get_settings
 from alert_bot.db.models import User
 from alert_bot.llm.keywords import suggest_keywords
 from alert_bot.market import registry
@@ -28,9 +41,13 @@ from alert_bot.market.providers.base import (
 
 log = logging.getLogger(__name__)
 
-router = Router(name="admin_instruments")
-router.message.middleware(AdminOnlyMiddleware())
-router.callback_query.middleware(AdminOnlyMiddleware())
+# Добавление и превью — всем, у кого есть доступ к боту.
+router = Router(name="instruments")
+
+# Отключение инструмента и полный список реестра — только администратору.
+admin_router = Router(name="admin_instruments")
+admin_router.message.middleware(AdminOnlyMiddleware())
+admin_router.callback_query.middleware(AdminOnlyMiddleware())
 
 # Площадка по умолчанию для крипты — одна константа на оба пути добавления:
 # и на /add_instrument без третьего слова, и на угадывание в /add_many. Двумя
@@ -64,6 +81,37 @@ def ban_hint(exchange: str) -> str:
         "Те же пары есть на других биржах:\n"
         f"<code>/add_many BTC/USDT@{spare} ETH/USDT@{spare}</code>"
     )
+
+
+async def quota_left(user: User) -> int | None:
+    """Сколько инструментов человеку ещё можно завести. None — без ограничения."""
+    if user.is_admin:
+        return None
+    limit = get_settings().max_instruments_per_user
+    return max(0, limit - await registry.count_added_by(user.tg_id))
+
+
+def quota_message(user: User) -> str:
+    limit = get_settings().max_instruments_per_user
+    return (
+        f"❌ Вы уже завели {limit} инструментов — это личный потолок.\n\n"
+        "Отключите ненужный через кнопку «Инструменты» и попросите "
+        "администратора убрать его из реестра, либо подпишитесь на то, "
+        "что уже добавили другие."
+    )
+
+
+async def adopt_existing(user: User, symbol: str, exchange: str):  # noqa: ANN201
+    """Подписывает на инструмент, который в реестре уже есть.
+
+    Для человека это то же действие с тем же результатом — «хочу следить за
+    BTC», — но реестр не растёт дубликатами и слот не тратится.
+    """
+    existing = await registry.get_by_symbol(symbol, exchange)
+    if existing is None or not existing.enabled:
+        return None
+    await registry.subscribe(user.tg_id, existing.id)
+    return existing
 
 
 class AddInstrument(StatesGroup):
@@ -138,6 +186,19 @@ async def cmd_add_instrument(
 
     symbol = args[0].upper()
     exchange = args[1].lower() if len(args) > 1 else DEFAULT_EXCHANGE
+
+    already = await adopt_existing(user, symbol, exchange)
+    if already is not None:
+        await message.answer(
+            f"🔔 <b>{already.symbol}</b> уже в реестре — подписал вас на него.\n\n"
+            "Ставьте уровни: кнопка «Добавить уровень».",
+            reply_markup=back_kb(),
+        )
+        return
+
+    if await quota_left(user) == 0:
+        await message.answer(quota_message(user), reply_markup=back_kb())
+        return
 
     status = await message.answer(f"⏳ Проверяю {symbol} на {exchange}…")
 
@@ -338,8 +399,18 @@ async def _add_many(
 
     added, skipped, failed = [], [], []
     banned: dict[str, ExchangeBanned] = {}
+    subscribed: list[str] = []
 
     for symbol, exchange in items:
+        already = await adopt_existing(user, symbol, exchange)
+        if already is not None:
+            subscribed.append(already.symbol)
+            continue
+
+        if await quota_left(user) == 0:
+            skipped.append(f"{symbol}: личный потолок инструментов исчерпан")
+            continue
+
         try:
             meta = await registry.validate_candidate(symbol, exchange)
         except ExchangeBanned as exc:
@@ -377,6 +448,9 @@ async def _add_many(
     if added:
         lines.append(f"<b>✅ Добавлено ({len(added)})</b>")
         lines += [f"  {x}" for x in added]
+    if subscribed:
+        lines.append(f"\n<b>🔔 Уже были в реестре, подписал ({len(subscribed)})</b>")
+        lines += [f"  {x}" for x in subscribed]
     if skipped:
         lines.append(f"\n<b>⏭ Пропущено ({len(skipped)})</b>")
         lines += [f"  {x}" for x in skipped]
@@ -419,7 +493,7 @@ async def cmd_add_many(message: Message, command: CommandObject, user: User) -> 
     await _add_many(message, user, _parse_bulk(args))
 
 
-@router.message(Command("instruments"))
+@admin_router.message(Command("instruments"))
 async def cmd_instruments(message: Message) -> None:
     instruments = await registry.list_instruments()
     if not instruments:
@@ -446,7 +520,7 @@ async def cmd_instruments(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-@router.message(Command("rm_instrument"))
+@admin_router.message(Command("rm_instrument"))
 async def cmd_rm_instrument(message: Message, command: CommandObject) -> None:
     args = (command.args or "").split()
     if not args:
@@ -467,7 +541,7 @@ async def cmd_rm_instrument(message: Message, command: CommandObject) -> None:
     )
 
 
-@router.callback_query(F.data == "menu:instruments")
+@admin_router.callback_query(F.data == "menu:instruments")
 async def cb_instruments(callback: CallbackQuery) -> None:
     from alert_bot.bot.menu import admin_menu_kb
 

@@ -157,18 +157,18 @@ class StubMessage:
         return self.status
 
 
-async def test_admin_sees_the_wait_and_a_way_around(monkeypatch) -> None:
+async def test_admin_sees_the_wait_and_a_way_around(db, monkeypatch) -> None:
     """Вместо обрезанного JSON — сколько ждать и что можно сделать сейчас."""
-    from alert_bot.bot import admin_instruments
+    from alert_bot.bot import instruments
     from alert_bot.db.models import User
 
     async def banned(symbol: str, exchange: str):  # noqa: ANN202
         raise ExchangeBanned(exchange, 300)
 
-    monkeypatch.setattr(admin_instruments.registry, "validate_candidate", banned)
+    monkeypatch.setattr(instruments.registry, "validate_candidate", banned)
 
     message = StubMessage()
-    await admin_instruments._add_many(
+    await instruments._add_many(
         message, User(tg_id=1), [("BTC/USDT", "binance"), ("ETH/USDT", "binance")]
     )
 

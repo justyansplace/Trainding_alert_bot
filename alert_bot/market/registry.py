@@ -89,6 +89,16 @@ async def validate_candidate(symbol: str, exchange: str) -> SymbolMeta:
     return meta
 
 
+async def count_added_by(tg_id: int) -> int:
+    """Сколько включённых инструментов завёл этот человек."""
+    async with session_scope() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(Instrument)
+            .where(Instrument.added_by == tg_id, Instrument.enabled.is_(True))
+        ) or 0
+
+
 async def add_instrument(
     meta: SymbolMeta,
     exchange: str,

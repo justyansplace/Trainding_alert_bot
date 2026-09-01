@@ -16,6 +16,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, User as TgUser
 from sqlalchemy import select, update
 
+from alert_bot.config import get_settings
 from alert_bot.db.models import Invite, Role, User, utcnow
 from alert_bot.db.session import invite_lifetime, session_scope
 
@@ -179,6 +180,60 @@ async def revoke_user(tg_id: int) -> bool:
             raise RedeemError("Нельзя отозвать доступ у администратора.")
         user.active = False
         return True
+
+
+async def grant_admin(tg_id: int) -> User:
+    """Делает администратором того, у кого уже есть доступ.
+
+    Именно «у кого уже есть»: роль не выдаётся незнакомцу по одному номеру.
+    Сначала человек проходит обычный путь через инвайт — так администратор
+    видит, что номер настоящий и принадлежит тому, кому он думает.
+    """
+    async with session_scope() as session:
+        user = await session.get(User, tg_id)
+        if user is None or not user.active:
+            raise RedeemError(
+                "Сначала выдайте доступ: /gen_invite, человек активирует код, "
+                "и только потом роль."
+            )
+        if user.is_admin:
+            raise RedeemError("Уже администратор.")
+        user.role = Role.ADMIN.value
+        log.info("tg_id=%s стал администратором", tg_id)
+        return user
+
+
+async def revoke_admin(tg_id: int, by: int) -> User:
+    """Снимает роль администратора. Доступ к боту при этом остаётся."""
+    settings = get_settings()
+
+    if tg_id == by:
+        raise RedeemError("Снять роль с себя нельзя — попросите второго администратора.")
+    # Владелец из конфига неприкосновенен: роль ему всё равно вернётся на
+    # ближайшем старте, а до старта бот остался бы без администратора вовсе.
+    if tg_id == settings.admin_tg_id:
+        raise RedeemError("Это владелец из конфига, роль с него не снимается.")
+
+    async with session_scope() as session:
+        user = await session.get(User, tg_id)
+        if user is None:
+            raise RedeemError("Пользователь не найден.")
+        if not user.is_admin:
+            raise RedeemError("Он и так не администратор.")
+        user.role = Role.USER.value
+        log.info("tg_id=%s больше не администратор (снял %s)", tg_id, by)
+        return user
+
+
+async def list_admins() -> list[User]:
+    async with session_scope() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(User).where(User.role == Role.ADMIN.value, User.active.is_(True))
+                )
+            ).all()
+        )
 
 
 def fmt_dt(value: datetime | None) -> str:

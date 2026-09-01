@@ -73,22 +73,50 @@ def _subscribe_kb(instruments, subs) -> InlineKeyboardMarkup:  # noqa: ANN001
                 )
             ]
         )
+    rows.append(
+        [InlineKeyboardButton(text="➕ Добавить свой", callback_data="menu:addinstrument")]
+    )
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+ADD_INSTRUMENT_HELP = (
+    "<b>➕ Свой инструмент</b>\n\n"
+    "Если нужного нет в списке — заведите сами, ждать администратора не нужно.\n\n"
+    "<code>/add_instrument BTC/USDT</code> — крипта\n"
+    "<code>/add_instrument EUR/USD yahoo</code> — валюты, металлы, индексы\n"
+    "<code>/add_many BTC/USDT ETH/USDT EURUSD</code> — несколько сразу\n\n"
+    "Перед добавлением бот показывает превью: цену, объём и ключевые слова — "
+    "и ждёт подтверждения.\n\n"
+    "<i>Инструменты общие: если кто-то уже завёл нужный, вас просто подпишут "
+    "на существующий.</i>"
+)
+
+
 async def render_subscribe(user: User) -> tuple[str, InlineKeyboardMarkup]:
     instruments = await registry.list_instruments(enabled_only=True)
-    if not instruments:
-        return "Инструментов пока нет — администратор ещё не добавил ни одного.", back_kb()
-
     subs = await registry.list_subscriptions(user.tg_id)
+
+    if not instruments:
+        return (
+            "<b>🔔 Инструменты</b>\n\nВ реестре пока пусто.\n\n" + ADD_INSTRUMENT_HELP,
+            back_kb(),
+        )
+
     text = (
         "<b>🔔 Инструменты</b>\n\n"
         "Отметьте те, по которым хотите получать алерты. Уровни ставятся "
-        "только по подписанным инструментам."
+        "только по подписанным инструментам.\n\n"
+        "<i>Нужного нет — «Добавить свой», ждать администратора не нужно.</i>"
     )
     return text, _subscribe_kb(instruments, subs)
+
+
+@router.callback_query(F.data == "menu:addinstrument")
+async def cb_add_instrument_help(callback: CallbackQuery) -> None:
+    assert callback.message is not None
+    await callback.message.edit_text(ADD_INSTRUMENT_HELP, reply_markup=back_kb())
+    await callback.answer()
 
 
 @router.message(Command("subscribe"))

@@ -81,19 +81,27 @@ async def init_db() -> None:
 
     settings = get_settings()
     async with session_scope() as session:
-        admin = await session.get(User, settings.admin_tg_id)
-        if admin is None:
-            session.add(
-                User(
-                    tg_id=settings.admin_tg_id,
-                    role=Role.ADMIN.value,
-                    granted_at=utcnow(),
-                    invite_code=None,
+        # Все администраторы из конфига заводятся одинаково: инвайт им не
+        # нужен, иначе первый вход был бы невозможен — приглашать некому.
+        for tg_id in settings.admin_ids:
+            admin = await session.get(User, tg_id)
+            if admin is None:
+                session.add(
+                    User(
+                        tg_id=tg_id,
+                        role=Role.ADMIN.value,
+                        granted_at=utcnow(),
+                        invite_code=None,
+                    )
                 )
-            )
-            log.info("Создан админ %s", settings.admin_tg_id)
-        elif admin.role != Role.ADMIN.value:
-            admin.role = Role.ADMIN.value
+                log.info("Создан админ %s", tg_id)
+                continue
+            if admin.role != Role.ADMIN.value:
+                admin.role = Role.ADMIN.value
+                log.info("Роль администратора возвращена %s", tg_id)
+            # Администратора из конфига нельзя оставить отключённым: он
+            # единственный, кто может починить доступ остальным.
+            admin.active = True
 
         existing = set((await session.scalars(select(Source.url))).all())
         for name, kind, url, weight in SEED_SOURCES:
