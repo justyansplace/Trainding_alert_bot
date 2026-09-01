@@ -33,6 +33,8 @@ COLUMNS: list[tuple[str, str, str]] = [
     ("users", "max_alerts_per_day", "INTEGER"),
     # Направление подхода: кому-то интересны только пробои вверх.
     ("users", "direction_filter", "VARCHAR(8)"),
+    # С какого момента инструмент никому не нужен — для автоуборки сирот.
+    ("instruments", "orphan_since", "DATETIME"),
 ]
 
 

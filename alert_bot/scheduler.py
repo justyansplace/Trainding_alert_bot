@@ -35,6 +35,10 @@ HISTORY_LIMIT = 200  # H1-свечей на расчёт ATR(14) с запасо
 TICK_LIMIT = 3
 RECOMPUTE_INTERVAL = timedelta(hours=1)  # как часто пересчитывать ATR
 
+# Как часто проверять, не осиротел ли инструмент. Срок жизни сироты — сутки,
+# поэтому чаще раза в час смысла нет: проверка ходит в БД по всем подпискам.
+ORPHAN_SWEEP_INTERVAL = timedelta(hours=1)
+
 # Сколько инструментов обрабатывается одновременно. На холодном старте всем
 # нужен пересчёт сразу, и «все разом» означает пачку тяжёлых запросов: сотни
 # свечей на инструмент, часть через синхронный yfinance в потоках. Событийный
@@ -67,6 +71,7 @@ class PriceLoop:
         self._runtime: dict[int, InstrumentRuntime] = {}
         self._stopping = asyncio.Event()
         self._notifier = notifier
+        self._last_orphan_sweep: datetime | None = None
 
     def runtime(self, instrument_id: int) -> InstrumentRuntime:
         return self._runtime.setdefault(instrument_id, InstrumentRuntime())
@@ -265,12 +270,59 @@ class PriceLoop:
             log.exception("Сводка для %s не получена, шлём алерт без неё", instrument.symbol)
             return None
 
+    async def sweep_orphans(self, now: datetime) -> None:
+        """Отключает инструменты, на которые никто не смотрит.
+
+        Проверка не на каждом тике: срок жизни сироты — сутки, а тик идёт раз
+        в десять секунд, и запрос по всем подпискам столько раз в минуту —
+        чистая трата.
+        """
+        settings = get_settings()
+        ttl = timedelta(hours=settings.orphan_ttl_hours)
+        if ttl <= timedelta(0):
+            return
+        if (
+            self._last_orphan_sweep is not None
+            and now - self._last_orphan_sweep < ORPHAN_SWEEP_INTERVAL
+        ):
+            return
+
+        self._last_orphan_sweep = now
+        retired = await registry.sweep_orphans(ttl, now)
+        for instrument in retired:
+            self._runtime.pop(instrument.id, None)
+            self._announce_retired(instrument, settings.orphan_ttl_hours)
+
+    def _announce_retired(self, instrument: Instrument, hours: int) -> None:
+        """Сообщает тому, кто заводил инструмент, что он отключён.
+
+        Именно ему: остальные на инструмент не подписаны — потому он и
+        отключён, — а человек, который его завёл, единственный, для кого это
+        новость, а не шум.
+        """
+        if self._notifier is None:
+            return
+        self._notifier.enqueue(
+            Outgoing(
+                chat_id=instrument.added_by,
+                text=(
+                    f"🧹 <b>{instrument.symbol}</b> отключён.\n\n"
+                    f"{hours} ч на него никто не был подписан и уровней по нему "
+                    "ни у кого нет.\n\n"
+                    "<i>Свечи и история сохранены — повторное добавление вернёт "
+                    "инструмент вместе с ними:</i>\n"
+                    f"<code>/add_instrument {instrument.symbol} {instrument.exchange}</code>"
+                ),
+            )
+        )
+
     async def tick(self) -> None:
+        now = datetime.now(tz=UTC)
+        await self.sweep_orphans(now)
+
         instruments = await registry.list_instruments(enabled_only=True)
         if not instruments:
             return
-
-        now = datetime.now(tz=UTC)
 
         async def guarded(instrument: Instrument) -> None:
             try:

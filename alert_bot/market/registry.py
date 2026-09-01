@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
 from alert_bot.config import get_settings
-from alert_bot.db.models import Instrument, Subscription, utcnow
+from alert_bot.db.models import Instrument, Subscription, User, UserLevel, utcnow
 from alert_bot.db.session import session_scope
 from alert_bot.market.providers import ccxt_provider  # noqa: F401 — регистрация в фабрике
 from alert_bot.market.providers import oanda_provider  # noqa: F401 — регистрация в фабрике
@@ -120,6 +121,7 @@ async def add_instrument(
             existing.price_precision = meta.price_precision
             existing.provider = provider_for(exchange)
             existing.last_error = None
+            existing.orphan_since = None
             log.info("Инструмент %s реактивирован", meta.symbol)
             return existing
 
@@ -139,6 +141,81 @@ async def add_instrument(
         await session.flush()
         log.info("Инструмент %s@%s добавлен (id=%s)", meta.symbol, exchange, instrument.id)
         return instrument
+
+
+async def sweep_orphans(
+    ttl: timedelta, now: datetime | None = None
+) -> list[Instrument]:
+    """Отключает инструменты, на которые сутки никто не смотрит.
+
+    Реестр открыт всем, и без уборки он зарастает тем, что завели попробовать
+    и забыли: опрос площадки идёт по-прежнему, а слот из общего потолка занят.
+
+    «Смотрит» — это подписка либо поставленный уровень. Уровень считается
+    наравне с подпиской намеренно: человек мог отписаться от алертов, но
+    отметки оставить, и молча снести инструмент у него из-под них было бы
+    подменой его решения.
+
+    Отключение мягкое: свечи, уровни и история остаются, повторное добавление
+    возвращает инструмент вместе с ними.
+    """
+    if ttl <= timedelta(0):
+        return []
+
+    now = now or utcnow()
+    retired: list[Instrument] = []
+
+    async with session_scope() as session:
+        watched = set(
+            (
+                await session.scalars(
+                    select(Subscription.instrument_id)
+                    .join(User, User.tg_id == Subscription.tg_id)
+                    .where(Subscription.enabled.is_(True), User.active.is_(True))
+                )
+            ).all()
+        )
+        watched |= set(
+            (
+                await session.scalars(
+                    select(UserLevel.instrument_id).where(UserLevel.active.is_(True))
+                )
+            ).all()
+        )
+
+        instruments = (
+            await session.scalars(select(Instrument).where(Instrument.enabled.is_(True)))
+        ).all()
+
+        for instrument in instruments:
+            if instrument.id in watched:
+                instrument.orphan_since = None
+                continue
+
+            if instrument.orphan_since is None:
+                # Отсчёт начинается с первого наблюдения, а не с добавления:
+                # инструмент мог прожить месяц с подписчиками и осиротеть вчера.
+                instrument.orphan_since = now
+                log.info(
+                    "Инструмент %s остался без подписчиков, отсчёт пошёл",
+                    instrument.symbol,
+                )
+                continue
+
+            if now - instrument.orphan_since >= ttl:
+                instrument.enabled = False
+                retired.append(
+                    Instrument(
+                        id=instrument.id,
+                        symbol=instrument.symbol,
+                        exchange=instrument.exchange,
+                        added_by=instrument.added_by,
+                        round_step=instrument.round_step,
+                    )
+                )
+                log.info("Инструмент %s отключён как ненужный", instrument.symbol)
+
+    return retired
 
 
 async def disable_instrument(symbol: str, exchange: str | None = None) -> Instrument | None:
@@ -163,6 +240,14 @@ async def subscribe(tg_id: int, instrument_id: int, enabled: bool = True) -> Non
             )
         else:
             sub.enabled = enabled
+
+        if enabled:
+            # Отсчёт до уборки снимается сразу, а не на ближайшем проходе:
+            # инструмент, на который только что подписались, не сирота, и
+            # уборка через час не должна застать его с прошлой отметкой.
+            instrument = await session.get(Instrument, instrument_id)
+            if instrument is not None:
+                instrument.orphan_since = None
 
 
 async def list_subscriptions(tg_id: int) -> dict[int, Subscription]:

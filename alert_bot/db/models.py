@@ -161,6 +161,11 @@ class Instrument(Base):
     # и приблизительное значение здесь хуже, чем отсутствие значения.
     atr: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # С какого момента на инструмент никто не смотрит. NULL — смотрят.
+    # Отдельная отметка, а не вычисление на лету: «сутки без подписчиков»
+    # нельзя восстановить из текущего состояния, у подписки нет истории.
+    orphan_since: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
     def __repr__(self) -> str:
         return f"<Instrument {self.symbol}@{self.exchange}>"
 
