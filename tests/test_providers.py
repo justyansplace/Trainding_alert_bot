@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from alert_bot.market.providers.base import derive_round_step
+from ccxt.base.decimal_to_precision import SIGNIFICANT_DIGITS, TICK_SIZE
+
 from alert_bot.market.providers.ccxt_provider import _price_precision
 
 
@@ -67,9 +69,45 @@ def test_round_step_stays_in_sane_ratio(price: float) -> None:
     ],
 )
 def test_price_precision_handles_both_ccxt_modes(market: dict, expected: int) -> None:
-    """ccxt отдаёт precision в двух несовместимых видах в зависимости от биржи.
+    """ccxt отдаёт precision в трёх несовместимых видах в зависимости от биржи.
 
     Спутать их — значит форматировать цену BTC с пятью знаками или цену DOGE
     с двумя, то есть показать 0.09 вместо 0.09096.
     """
     assert _price_precision(market) == expected
+
+
+@pytest.mark.parametrize(
+    ("price", "expected", "shown"),
+    [
+        (76_851.0, 0, "76851"),      # у BTC пять значащих — это целые доллары
+        (2_385.6, 1, "2385.6"),
+        (0.080998, 6, "0.080998"),   # у дешёвой монеты знаков наоборот больше
+        (1.0, 4, "1.0000"),
+    ],
+)
+def test_significant_digits_need_the_price_too(price: float, expected: int, shown: str) -> None:
+    """Bitfinex считает значащие цифры, а не знаки после запятой.
+
+    По одному значению 5 эти режимы неразличимы, поэтому нужна ещё и цена: у
+    BTC пять значащих цифр означают ноль знаков после запятой, у монеты за
+    восемь центов — шесть. Без разбора режима BTC рисовался бы как
+    76 851.00000.
+    """
+    market = {"precision": {"price": 5}}
+    precision = _price_precision(market, SIGNIFICANT_DIGITS, price)
+    assert precision == expected
+    assert f"{price:.{precision}f}" == shown
+
+
+def test_significant_digits_without_price_fall_back(price=None) -> None:
+    """Цены может не быть — тогда безопасный дефолт, а не пять знаков."""
+    assert _price_precision({"precision": {"price": 5}}, SIGNIFICANT_DIGITS, None) == 2
+    assert _price_precision({"precision": {"price": 5}}, SIGNIFICANT_DIGITS, 0) == 2
+
+
+def test_tick_size_ignores_the_price() -> None:
+    """У режима шага цена ни при чём — иначе сломали бы Binance, Bybit и OKX."""
+    market = {"precision": {"price": 0.01}}
+    assert _price_precision(market, TICK_SIZE, 76_851.0) == 2
+    assert _price_precision(market, TICK_SIZE, 0.09) == 2

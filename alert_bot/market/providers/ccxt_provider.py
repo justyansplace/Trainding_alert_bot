@@ -28,6 +28,7 @@ import time
 
 import ccxt.async_support as ccxt
 import pandas as pd
+from ccxt.base.decimal_to_precision import SIGNIFICANT_DIGITS
 
 from alert_bot.market.providers.base import (
     DataProvider,
@@ -123,14 +124,29 @@ async def _ensure_markets(exchange: ccxt.Exchange, name: str) -> None:
         _markets_loaded.add(name)
 
 
-def _price_precision(market: dict) -> int:
+def _price_precision(market: dict, mode: int | None = None, price: float | None = None) -> int:
     """Число знаков после запятой в цене.
 
-    ccxt отдаёт precision.price в двух несовместимых видах в зависимости от
-    precisionMode биржи: DECIMAL_PLACES — это число знаков, TICK_SIZE — сам шаг
-    (0.01). Различаем по типу и величине.
+    ccxt отдаёт precision.price в трёх несовместимых видах, и какой именно —
+    говорит precisionMode биржи, а не тип значения:
+
+      * TICK_SIZE — сам шаг (0.01). Так делают Binance, Bybit, OKX.
+      * DECIMAL_PLACES — уже число знаков.
+      * SIGNIFICANT_DIGITS — значащих цифр всего, а не после запятой. Так
+        делает Bitfinex, и по одному значению 5 отличить его от «пяти знаков
+        после запятой» нельзя: у BTC это ноль знаков, у монеты за $0.09 —
+        шесть. Поэтому нужна ещё и сама цена.
+
+    Без разбора режима BTC на Bitfinex рисовался бы как 76 750.00000, а у
+    дешёвой монеты знаков, наоборот, не хватило бы.
     """
     raw = market.get("precision", {}).get("price")
+
+    if mode == SIGNIFICANT_DIGITS and isinstance(raw, (int, float)) and raw > 0:
+        if not price or price <= 0:
+            return 2
+        decimals = int(raw) - 1 - math.floor(math.log10(price))
+        return max(0, min(decimals, 12))
 
     if isinstance(raw, int):
         return max(0, min(raw, 12))
@@ -189,7 +205,7 @@ class CcxtProvider(DataProvider):
         return SymbolMeta(
             symbol=symbol,
             last_price=float(last),
-            price_precision=_price_precision(market),
+            price_precision=_price_precision(market, ex.precisionMode, float(last)),
             volume_24h=ticker.get("quoteVolume"),
             extra={"base": market.get("base"), "quote": market.get("quote")},
         )
