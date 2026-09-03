@@ -19,7 +19,7 @@ from aiogram import Bot, Dispatcher
 
 from alert_bot.bot.main import build_bot, build_dispatcher, set_commands
 from alert_bot.bot.notifier import Notifier
-from alert_bot.config import get_settings
+from alert_bot.config import get_settings, unrecognized_env_vars
 from alert_bot.db.session import dispose_engine, init_db
 from alert_bot.health import check_data_dir_writable, clear_heartbeat
 from alert_bot.market.providers.ccxt_provider import close_all_exchanges
@@ -99,6 +99,15 @@ async def run() -> None:
         health_runner = await start_health_server(port)
     else:
         log.info("PORT не задан — HTTP-проверка живости не поднимается")
+
+    # Опечатка в имени переменной иначе остаётся тихой: extra="ignore" молча
+    # выбрасывает её, сервис поднимается, а функция не работает.
+    for given, meant in unrecognized_env_vars():
+        log.warning(
+            "Переменная %s не распознана — возможно, имелось в виду %s. "
+            "Как есть она игнорируется.",
+            given, meant,
+        )
 
     writable, message = check_data_dir_writable()
     log.info(message) if writable else log.error(message)

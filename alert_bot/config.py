@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import difflib
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -159,6 +161,30 @@ class Settings(BaseSettings):
 
 
 _settings: Settings | None = None
+
+
+def unrecognized_env_vars(environ: dict | None = None) -> list[tuple[str, str]]:
+    """Переменные, похожие на наши, но названные не так.
+
+    В конфиге стоит extra="ignore": переменная с чужим именем игнорируется
+    молча. Для чужих PATH и HOME это правильно, но опечатка в своей же
+    переменной так превращается в тихий отказ — сервис поднимается, а
+    функция не работает, и причину видно только по месту отказа.
+
+    Похожесть считается по именам полей, а не по списку префиксов: список
+    пришлось бы дополнять при каждом новом поле, и он бы отстал.
+    """
+    known = {name.upper() for name in Settings.model_fields}
+    found: list[tuple[str, str]] = []
+
+    for name in sorted(environ if environ is not None else os.environ):
+        if name.upper() in known:
+            continue
+        close = difflib.get_close_matches(name.upper(), known, n=1, cutoff=0.75)
+        if close:
+            found.append((name, close[0]))
+
+    return found
 
 
 def get_settings() -> Settings:

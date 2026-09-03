@@ -102,3 +102,34 @@ def test_message_separates_missing_from_invalid(monkeypatch, capsys) -> None:
 
     assert "Не заданы:" in err and "TELEGRAM_BOT_TOKEN" in err
     assert "Заданы неверно:" in err and "OANDA_ENVIRONMENT" in err
+
+
+# --------------------------------------------------------------------------- #
+# Опечатка в имени переменной
+# --------------------------------------------------------------------------- #
+
+
+def test_misnamed_variable_is_pointed_out() -> None:
+    """extra="ignore" молча выбрасывает чужое имя — опечатка иначе тихая."""
+    found = dict(
+        config.unrecognized_env_vars(
+            {"OANDA_API_KEY": "x", "TELEGRAM_TOKEN": "y", "ADMIN_ID": "1"}
+        )
+    )
+    assert found["OANDA_API_KEY"] == "OANDA_API_TOKEN"
+    assert found["TELEGRAM_TOKEN"] == "TELEGRAM_BOT_TOKEN"
+    assert found["ADMIN_ID"] == "ADMIN_TG_ID"
+
+
+def test_correct_names_are_not_flagged() -> None:
+    assert config.unrecognized_env_vars(
+        {"OANDA_API_TOKEN": "x", "ADMIN_TG_IDS": "1", "AUTO_ARCHIVE_PCT": "3"}
+    ) == []
+
+
+def test_foreign_variables_stay_quiet() -> None:
+    """Хостинг подмешивает свои переменные — ругаться на них было бы шумом."""
+    assert config.unrecognized_env_vars(
+        {"PATH": "/usr/bin", "HOME": "/root", "PORT": "8080",
+         "RAILWAY_SERVICE_ID": "abc", "LANG": "C.UTF-8"}
+    ) == []
