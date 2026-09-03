@@ -140,7 +140,36 @@ class Settings(BaseSettings):
                 if not value:
                     continue  # пустое = не заданное
             cleaned[key] = value
-        return cleaned
+
+        return cls._split_admin_list(cleaned)
+
+    @staticmethod
+    def _split_admin_list(values: dict) -> dict:
+        """Список в ADMIN_TG_ID разбирается, а не роняет запуск.
+
+        Имена ADMIN_TG_ID и ADMIN_TG_IDS различаются одной буквой и имеют
+        разный смысл — это ловушка, которую поставил сам конфиг. Человек,
+        которому нужны два администратора, естественно пишет оба номера в ту
+        переменную, которую уже видит в панели.
+
+        Поэтому список принимается в обеих: первый номер — владелец, остальные
+        уезжают к дополнительным. Владелец первый именно потому, что у него
+        особое право — с него нельзя снять роль из бота.
+        """
+        raw = values.get("admin_tg_id")
+        if not isinstance(raw, str):
+            return values
+
+        parts = [p.strip() for p in raw.replace(";", ",").split(",")]
+        parts = [p for p in parts if p]
+        if len(parts) <= 1:
+            return values
+
+        extra = ",".join(parts[1:])
+        already = str(values.get("admin_tg_ids") or "").strip()
+        values["admin_tg_id"] = parts[0]
+        values["admin_tg_ids"] = f"{extra},{already}" if already else extra
+        return values
 
     @field_validator("oanda_environment", "llm_provider", mode="before")
     @classmethod

@@ -164,3 +164,60 @@ def test_foreign_variables_stay_quiet() -> None:
         {"PATH": "/usr/bin", "HOME": "/root", "PORT": "8080",
          "RAILWAY_SERVICE_ID": "abc", "LANG": "C.UTF-8"}
     ) == []
+
+
+# --------------------------------------------------------------------------- #
+# Список администраторов
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "561540261, 645625357",
+        "561540261,645625357",
+        "561540261; 645625357",
+        '"561540261, 645625357"',
+        "  561540261 ,  645625357  ",
+    ],
+)
+def test_admin_list_in_the_singular_variable_is_understood(monkeypatch, given: str) -> None:
+    """ADMIN_TG_ID и ADMIN_TG_IDS различаются одной буквой — это ловушка конфига.
+
+    Человек, которому нужны два администратора, пишет оба номера в ту
+    переменную, которую уже видит в панели. Раньше это роняло запуск.
+    """
+    monkeypatch.setenv("ADMIN_TG_ID", given)
+    monkeypatch.delenv("ADMIN_TG_IDS", raising=False)
+
+    settings = config.Settings(_env_file=None)
+    assert settings.admin_tg_id == 561540261       # владелец — первый
+    assert settings.admin_ids == [561540261, 645625357]
+
+
+def test_both_variables_merge(monkeypatch) -> None:
+    monkeypatch.setenv("ADMIN_TG_ID", "561540261, 645625357")
+    monkeypatch.setenv("ADMIN_TG_IDS", "999")
+    assert config.Settings(_env_file=None).admin_ids == [561540261, 645625357, 999]
+
+
+def test_single_id_is_unchanged(monkeypatch) -> None:
+    monkeypatch.setenv("ADMIN_TG_ID", "561540261")
+    monkeypatch.delenv("ADMIN_TG_IDS", raising=False)
+    settings = config.Settings(_env_file=None)
+    assert settings.admin_tg_id == 561540261
+    assert settings.admin_ids == [561540261]
+
+
+def test_owner_is_the_first_in_the_list(monkeypatch) -> None:
+    """Порядок не косметика: с владельца нельзя снять роль из бота."""
+    monkeypatch.setenv("ADMIN_TG_ID", "645625357, 561540261")
+    monkeypatch.delenv("ADMIN_TG_IDS", raising=False)
+    assert config.Settings(_env_file=None).admin_tg_id == 645625357
+
+
+def test_garbage_in_the_list_still_refuses(monkeypatch) -> None:
+    """Прощать всё нельзя: буквы вместо номера — это ошибка, а не список."""
+    monkeypatch.setenv("ADMIN_TG_ID", "не-номер, 645625357")
+    with pytest.raises(ValidationError):
+        config.Settings(_env_file=None)
