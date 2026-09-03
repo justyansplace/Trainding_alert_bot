@@ -48,6 +48,37 @@ def test_llm_provider_is_forgiving(monkeypatch, given: str) -> None:
     assert config.Settings(llm_provider=given).llm_provider == given.strip().lower()
 
 
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ('"practice"', "practice"),      # так строки пишут в документации
+        ("'practice'", "practice"),
+        ('  "practice"  ', "practice"),
+        ('"demo"', "practice"),          # кавычки поверх синонима
+    ],
+)
+def test_quotes_do_not_leak_into_the_value(monkeypatch, given: str, expected: str) -> None:
+    """KEY="value" из примера переносят в панель вместе с кавычками.
+
+    Кавычка уезжает внутрь значения, Literal его отвергает, и сервис не
+    поднимается — при том что глазами значение выглядит правильным.
+    """
+    monkeypatch.setenv("OANDA_ENVIRONMENT", given)
+    assert config.Settings().oanda_environment == expected
+
+
+@pytest.mark.parametrize("given", ['"abc123"', "'abc123'", "  abc123  ", '" abc123 "'])
+def test_quotes_are_stripped_from_secrets_too(monkeypatch, given: str) -> None:
+    """Токен в кавычках ушёл бы в заголовок как Bearer "abc123" и получил 401."""
+    monkeypatch.setenv("OANDA_API_TOKEN", given)
+    assert config.Settings().oanda_api_token == "abc123"
+
+
+def test_empty_quotes_read_as_unset(monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_ENVIRONMENT", '""')
+    assert config.Settings().oanda_environment == "practice"
+
+
 def test_blank_variable_falls_back_to_default(monkeypatch) -> None:
     """Переменную часто создают и оставляют пустой — это «не задано», а не «мусор»."""
     monkeypatch.setenv("OANDA_ENVIRONMENT", "")
