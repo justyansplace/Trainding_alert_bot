@@ -144,22 +144,44 @@ REQUIRED_HINT = {
 def _report_bad_config(error: Exception) -> None:
     """Понятное сообщение вместо стектрейса на сотню строк.
 
-    Не заданная переменная — самая частая ошибка первого запуска на хостинге, и
-    разбирать её по стектрейсу пайдантика тяжело: платформа перезапускает
-    процесс несколько раз, вывод нескольких попыток перемешивается, и настоящая
-    причина тонет.
+    Переменные — самая частая ошибка первого запуска на хостинге, и разбирать
+    её по стектрейсу пайдантика тяжело: платформа перезапускает процесс
+    несколько раз, вывод попыток перемешивается, и настоящая причина тонет.
+
+    Не заданная переменная и заданная неверно — разные болезни с разным
+    лечением, поэтому они и печатаются отдельно. Во втором случае обязательно
+    показывается само значение: на хостинге его не видно за звёздочками, и
+    лишний пробел или заглавная буква ищутся глазами очень долго.
     """
-    missing = []
+    missing: list[str] = []
+    invalid: list[str] = []
+
     for item in getattr(error, "errors", lambda: [])():
+        field = str(item["loc"][0]) if item.get("loc") else "?"
         if item.get("type") == "missing":
-            field = str(item["loc"][0])
             missing.append(REQUIRED_HINT.get(field, field.upper()))
+            continue
+        expected = (item.get("ctx") or {}).get("expected")
+        line = f"{field.upper()} = {item.get('input')!r}"
+        if expected:
+            line += f" — допустимо только {expected}"
+        else:
+            line += f" — {item.get('msg', 'неверное значение')}"
+        invalid.append(line)
 
     print("=" * 62, file=sys.stderr)
-    print("НЕ ЗАПУСКАЮСЬ: не заданы обязательные переменные окружения", file=sys.stderr)
+    print("НЕ ЗАПУСКАЮСЬ: проблема с переменными окружения", file=sys.stderr)
     print("=" * 62, file=sys.stderr)
-    for line in missing or [str(error)]:
-        print(f"  • {line}", file=sys.stderr)
+    if missing:
+        print("Не заданы:", file=sys.stderr)
+        for line in missing:
+            print(f"  • {line}", file=sys.stderr)
+    if invalid:
+        print("Заданы неверно:", file=sys.stderr)
+        for line in invalid:
+            print(f"  • {line}", file=sys.stderr)
+    if not missing and not invalid:
+        print(f"  • {error}", file=sys.stderr)
     print(file=sys.stderr)
     print("Локально: заполните .env (шаблон в .env.example).", file=sys.stderr)
     print(

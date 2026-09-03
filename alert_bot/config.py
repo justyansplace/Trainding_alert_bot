@@ -9,7 +9,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Как площадка называет то же самое своими словами. Человек, у которого демо-счёт,
+# пишет в переменную demo — и это ровно то же, что practice у их API.
+CHOICE_ALIASES = {
+    "demo": "practice",
+    "fxpractice": "practice",
+    "real": "live",
+    "fxtrade": "live",
+    "production": "live",
+}
 
 
 class Settings(BaseSettings):
@@ -92,6 +104,41 @@ class Settings(BaseSettings):
     # claude-haiku-4-5 и claude-sonnet-5 в .env.
     extraction_model: str = "gpt-5-mini"
     brief_model: str = "gpt-5-mini"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_means_unset(cls, data):  # noqa: ANN001, ANN206
+        """Пустая переменная = не заданная.
+
+        На хостинге переменную часто создают и оставляют значение пустым. Для
+        pydantic пустая строка — это заданное значение неверного типа, и
+        процесс падает ещё до подъёма HTTP-проверки: порт не открывается,
+        платформа видит только «service unavailable» и крутит перезапуск по
+        кругу. Пустое значение куда честнее считать отсутствующим — тогда
+        подставится дефолт, а по-настоящему обязательное поле сообщит о себе
+        внятно.
+        """
+        if not isinstance(data, dict):
+            return data
+        return {
+            key: value
+            for key, value in data.items()
+            if not (isinstance(value, str) and not value.strip())
+        }
+
+    @field_validator("oanda_environment", "llm_provider", mode="before")
+    @classmethod
+    def _normalize_choice(cls, value):  # noqa: ANN001, ANN206
+        """Регистр и синонимы не должны ронять процесс.
+
+        Practice и practice — одно и то же для человека, но для Literal это
+        разные строки, и цена расхождения непропорциональна: не предупреждение,
+        а незапускающийся сервис.
+        """
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        return CHOICE_ALIASES.get(normalized, normalized)
 
     @property
     def db_url(self) -> str:
