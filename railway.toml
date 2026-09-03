@@ -18,7 +18,7 @@ builder = "DOCKERFILE"
 # Dockerfile платформа не использует. Эндпоинт отвечает 503, если цикл цены
 # перестал делать обороты, — тогда Railway перезапустит сервис.
 healthcheckPath = "/health"
-healthcheckTimeout = 120
+healthcheckTimeout = 300
 
 restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10

@@ -114,15 +114,25 @@ async def run() -> None:
 
     try:
         await _serve(settings)
+    except Exception:
+        # Иначе платформа сообщает только «healthcheck failed», а причина
+        # остаётся в неперехваченном исключении без пометки, что это старт.
+        log.exception("ЗАПУСК НЕ УДАЛСЯ — процесс завершается")
+        raise
     finally:
         if health_runner is not None:
             await health_runner.cleanup()
 
 
 async def _serve(settings) -> None:  # noqa: ANN001
+    # Каждый шаг отмечается в логе до того, как начнётся. Между подготовкой БД
+    # и стартом опроса лежат два обращения к Telegram, и если процесс встаёт на
+    # них, в логе раньше не появлялось ничего: платформа показывала «сервис
+    # нездоров», а где именно он застрял — приходилось угадывать.
+    log.info("Шаг 1/5: подготовка БД %s", settings.db_path)
     await init_db()
-    log.info("БД готова: %s", settings.db_path)
 
+    log.info("Шаг 2/5: сборка бота и роутеров")
     bot = build_bot()
     dp: Dispatcher = build_dispatcher()
     runtime = Runtime(bot)
@@ -131,10 +141,14 @@ async def _serve(settings) -> None:  # noqa: ANN001
     dp.startup.register(runtime.start)
     dp.shutdown.register(runtime.stop)
 
+    log.info("Шаг 3/5: регистрация команд в Telegram")
     await set_commands(bot)
-    me = await bot.get_me()
-    log.info("Бот @%s запущен, админ %s", me.username, settings.admin_tg_id)
 
+    log.info("Шаг 4/5: проверка токена бота")
+    me = await bot.get_me()
+    log.info("Бот @%s, админ %s", me.username, settings.admin_tg_id)
+
+    log.info("Шаг 5/5: запуск опроса и фоновых циклов")
     try:
         await dp.start_polling(bot)
     finally:
